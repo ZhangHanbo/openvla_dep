@@ -74,7 +74,7 @@ class GRDataModule(pl.LightningDataModule):
             num_workers=num_workers if is_training else num_workers // 2,
             sampler=sampler,
             drop_last=True,
-            collate_fn=collate_with_none
+            collate_fn=dataset.collater if hasattr(dataset, 'collater') else collate_with_none,
         )
 
         return data_loader

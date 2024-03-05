@@ -319,6 +319,9 @@ class RoboFlamingo(nn.Module):
             past_key_values=None,
             use_cache: bool = False,
             vision_gripper = None,
+            fwd_rgb_labels: torch.Tensor = None,
+            fwd_hand_rgb_labels: torch.Tensor = None,
+            fwd_mask: torch.Tensor = None,
             **kwargs
         ):
 
@@ -359,7 +362,7 @@ class RoboFlamingo(nn.Module):
             output_hs = get_target_modal_tokens(output_hs, action_selector)
             output_hs = rearrange(output_hs, 'bl n d -> b l n d', b=bs, l=seq_len)
             _, action_loss = self._forward_action_head(output_hs, action_labels, action_mask)
-            self._update_loss(loss, action_loss, 'action')
+            self._update_loss(loss, action_loss, 'act')
 
         if self.fwd_head is not None:
             # TODO: future static rgb prediction
@@ -379,7 +382,7 @@ class RoboFlamingo(nn.Module):
                 caption_mask,
                 **kwargs,
             )
-            self._update_loss(loss, caption_loss, 'caption')
+            self._update_loss(loss, caption_loss, 'cap')
             
         loss = self._format_loss(loss)
 

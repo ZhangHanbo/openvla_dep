@@ -14,7 +14,7 @@ from utils.dist_train import get_rank
 import clip
 import lightning.pytorch as pl
 
-from train.utils import smooth_l1_loss, adjust_learning_rate, generate_chunck_data
+from train.train_utils import smooth_l1_loss, adjust_learning_rate, generate_chunck_data
 
 
 class FlamingoTrainer(pl.LightningModule):
@@ -62,33 +62,18 @@ class FlamingoTrainer(pl.LightningModule):
         self.arm_gripper_loss_ratio = self.configs['arm_gripper_loss_ratio']
         self.fwd_loss_ratio = self.configs['fwd_loss_ratio']
 
-        self.act_pred = self.model.act_pred
-        self.fwd_pred = self.model.fwd_pred
-        self.fwd_pred_hand = self.model.fwd_pred_hand
+        self.act_pred = self.configs['train_setup']['predict_action']
+        self.fwd_pred = self.configs['train_setup']['predict_forward']
+        self.fwd_pred_hand = self.configs['train_setup']['predict_forward_hand']
+        self.cap_pred = self.configs['train_setup']['predict_caption']
         self.use_hand_rgb = self.model.use_hand_rgb
 
         # Make sure that at least one prediction flag is on
-        assert self.act_pred or self.fwd_pred
+        assert self.act_pred or self.fwd_pred or self.cap_pred
 
         self.start_time = time.time()
 
     def _init_policy(self):
-
-        training_target = []
-        if self.configs['act_pred']: training_target.append('act_pred')
-        if self.configs['fwd_pred']: training_target.append('fwd_pred')
-        if self.configs['fwd_pred_hand']: training_target.append('fwd_pred_hand')
-
-        resampler_params = dict()
-        resampler_params['depth'] = self.configs['resampler_depth']
-        resampler_params['dim_head'] = self.configs['resampler_dim_head']
-        resampler_params['heads'] = self.configs['resampler_heads']
-        resampler_params['num_latents'] = self.configs['resampler_num_latents']
-        resampler_params['num_media_embeds'] = self.configs['resampler_num_media_embeds']
-
-        model_clip, _ = clip.load(self.configs['clip_backbone'], device='cpu')
-        for _, param in model_clip.named_parameters():
-            param.requires_grad = False
 
         model = RoboFlamingo(
             vision_encoder_configs=self.configs['vision_encoder'],
@@ -215,23 +200,17 @@ class FlamingoTrainer(pl.LightningModule):
             reformat: Identity
             seq_len = 1
         """
-        fwd_pred_next_n = self.configs['fwd_pred_next_n']
-        window_size = self.configs['window_size']
-        seq_len = batch['rgb'].shape[1]
         
-        if seq_len == window_size:
-            caption_flag = True
-        elif window_size + fwd_pred_next_n == seq_len:
-            caption_flag = False
-        else:
-            raise ValueError('The batched data is not supported')
 
         rgb = batch['rgb'].cuda()
+        if len(rgb.shape) == 4:
+            rgb = rgb.unsqueeze(1)
+        assert len(rgb.shape) == 5
         if isinstance(batch['text'], list) and isinstance(batch['text'][0], str):
-            pass
+            raise ValueError('The raw text data is not supported')
         else: 
             language = batch['text'].cuda()
-            attention_mask = batch['attention_mask'].cuda()
+            text_mask = batch['text_mask'].cuda()
         
         if batch.get('action', None):
             action = batch['action'].cuda()
@@ -240,7 +219,7 @@ class FlamingoTrainer(pl.LightningModule):
 
         attention_mask = batch['attention_mask'].cuda()
         
-        if self.use_hand_rgb and batch.get('hand_rgb', None):
+        if self.use_hand_rgb and batch.get('hand_rgb', None) is not None:
             hand_rgb = batch['hand_rgb'].cuda()
         else:
             hand_rgb = None
@@ -248,11 +227,6 @@ class FlamingoTrainer(pl.LightningModule):
         # Split arm and gripper action
         arm_action = None
         gripper_action = None
-
-        fwd_rgb_chunck = None
-        fwd_hand_rgb_chunck = None
-        arm_action_chunck = None
-        gripper_action_chunck = None
 
         if action is not None:
             arm_action = action[:, :, :6]  # b,len,act_dim-1
@@ -267,81 +241,53 @@ class FlamingoTrainer(pl.LightningModule):
         if fwd_hand_rgb_chunck is not None:
             fwd_hand_rgb_chunck = fwd_hand_rgb_chunck.cuda()
 
-        arm_action_chunck = batch.get('arm_action_chunck', None)
-        gripper_action_chunck = batch.get('gripper_action_chunck', None)
-        if arm_action_chunck is not None:
-            arm_action_chunck = arm_action_chunck.cuda()
-        if gripper_action_chunck is not None:
-            gripper_action_chunck = gripper_action_chunck.cuda()
+        arm_action_chunck = None
+        gripper_action_chunck = None
+        action_chunck = batch.get('action_chunck', None)
+        if action_chunck is not None:
+            action_chunck = action_chunck.cuda()
+            arm_action_chunck = action_chunck[..., :6]
+            gripper_action_chunck = action_chunck[..., -1]
+        
+                
+        fwd_pred_next_n = self.configs['fwd_pred_next_n']
+        seq_len = batch['rgb'].shape[1]
 
-        return rgb, hand_rgb, language, attention_mask, fwd_rgb_chunck, fwd_hand_rgb_chunck,\
-        arm_action, gripper_action, arm_action_chunck, gripper_action_chunck
+        caption_flag = False
+        if seq_len == 1:
+            caption_flag = True
+        if not caption_flag:
+            rgb = rgb[:, :-fwd_pred_next_n]
+            if hand_rgb is not None:
+                hand_rgb = hand_rgb[:, :-fwd_pred_next_n]
+        
+        chunck_mask = batch.get('chunck_mask', None)
+        if chunck_mask is not None:
+            chunck_mask = chunck_mask.cuda()
 
-    def _get_loss(self, prediction, arm_action_target, gripper_action_target, attention_mask, seq_len):
-        obs_preds = prediction['obs_preds']  # b,len,img_feat_dim
-        obs_target = prediction['obs_target']  # b,len,img_feat_dim
-        arm_action_preds = prediction['arm_action_preds']  # b,len,act_dim-1,(act_bin)
-        gripper_action_preds = prediction['gripper_action_preds']  # b,len,1
-        obs_hand_preds = prediction['obs_hand_preds']  # b,len,img_feat_dim
-        obs_hand_target = prediction['obs_hand_target']  # b,len,img_feat_dim
+        return rgb, hand_rgb, attention_mask, language, text_mask, fwd_rgb_chunck, fwd_hand_rgb_chunck,\
+        arm_action, gripper_action, arm_action_chunck, gripper_action_chunck, chunck_mask
 
-        loss_act = None
-        loss_arm_act = None
-        loss_gripper_act = None
-        acc_arm_act = None
-        acc_gripper_act = None
-        loss_obs = None
-        loss_hand_obs = None
-        gripper_cnt = 0
+    def _get_loss(self, prediction):
+        
+        loss_arm_act = prediction.get('loss_arm_act', None)
+        loss_gripper_act = prediction.get('loss_gripper_act', None)
+        loss_obs = prediction.get('loss_obs_fwd', None)
+        loss_hand_obs = prediction.get('loss_hand_obs_fwd', None)
+        acc_arm_act = prediction.get('acc_arm_act', None)
+        acc_gripper_act = prediction.get('acc_gripper_act', None)
+        loss_cap = prediction.get('loss_cap', None)
 
-        # action prediction
-        act_dim = self.model.act_dim
-        if self.act_pred:
-            arm_action_preds = arm_action_preds.view(-1, act_dim - 1)[
-                attention_mask.flatten() > 0]  # b,len,6 -> b*len,6
-            arm_action_target = arm_action_target.view(-1, act_dim - 1)[
-                attention_mask.flatten() > 0]  # b,len,6 -> b*len,6
-            loss_arm_act = smooth_l1_loss(arm_action_preds, arm_action_target)
-            # loss_arm_act = torch.nn.SmoothL1Loss()(arm_action_preds, arm_action_target)
-            gripper_action_preds = gripper_action_preds.flatten()[attention_mask.flatten() > 0]  # b,len,1 -> b*len
-            gripper_action_target = gripper_action_target.flatten()[attention_mask.flatten() > 0]  # b,len -> b*len
-            # making them the same type
-            gripper_action_target = gripper_action_target.type_as(gripper_action_preds)
-            # gripper_action_preds = torch.nn.Sigmoid()(gripper_action_preds)  # Sigmoid function
-            # loss_gripper_act = torch.nn.BCELoss()(gripper_action_preds, gripper_action_target)
-            loss_gripper_act = torch.nn.BCEWithLogitsLoss()(gripper_action_preds, gripper_action_target)
-            loss_act = loss_arm_act + loss_gripper_act * self.arm_gripper_loss_ratio
-            # Compute gripper action acc
-            gripper_action_preds = (gripper_action_preds > 0.5).float()
-            acc_gripper_act = torch.eq(gripper_action_preds, gripper_action_target).sum().float()
-            gripper_cnt = gripper_action_preds.shape[0]
-            acc_gripper_act /= gripper_cnt
-
-        # forward prediction
-        if self.fwd_pred:
-            fwd_pred_next_n = self.configs['fwd_pred_next_n']
-            obs_preds = obs_preds[:, :seq_len - fwd_pred_next_n, :, :]
-            obs_target = obs_target[:, fwd_pred_next_n:, :, :]
-            obs_attention_mask = attention_mask[:, fwd_pred_next_n:]
-            loss_obs = (obs_preds - obs_target) ** 2
-            loss_obs = loss_obs.mean(dim=-1).mean(dim=-1)
-            loss_obs = self.fwd_loss_ratio * (loss_obs * obs_attention_mask).sum() / obs_attention_mask.sum()
-            if self.fwd_pred_hand:
-                obs_hand_preds = obs_hand_preds[:, :seq_len - fwd_pred_next_n, :, :]
-                obs_hand_target = obs_hand_target[:, fwd_pred_next_n:, :, :]
-                loss_hand_obs = (obs_hand_preds - obs_hand_target) ** 2
-                loss_hand_obs = loss_hand_obs.mean(dim=-1).mean(dim=-1)
-                loss_hand_obs = self.fwd_loss_ratio * (
-                            loss_hand_obs * obs_attention_mask).sum() / obs_attention_mask.sum()
-
-        # compute loss
         loss = torch.tensor(0.0).to(self.device)
         if self.act_pred:
+            loss_act = loss_arm_act + loss_gripper_act * self.arm_gripper_loss_ratio
             loss += loss_act
         if self.fwd_pred:
-            loss += loss_obs
+            loss += self.fwd_loss_ratio * loss_obs
             if self.fwd_pred_hand:
-                loss += loss_hand_obs
+                loss += self.fwd_loss_ratio * loss_hand_obs
+        if self.cap_pred:
+            loss += self.cap_loss_ratio * loss_cap
 
         output = {
             'loss': loss,
@@ -352,7 +298,6 @@ class FlamingoTrainer(pl.LightningModule):
             'acc_gripper_act': acc_gripper_act,
             'loss_obs': loss_obs,
             'loss_hand_obs': loss_hand_obs,
-            'gripper_cnt': gripper_cnt,
         }
 
         return output
@@ -403,14 +348,25 @@ class FlamingoTrainer(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        rgb, hand_rgb, state, language, attention_mask, \
-        arm_action_target, gripper_action_target, seq_len \
-            = self._process_batch(batch)
+        rgb, hand_rgb, attention_mask, language, text_mask, fwd_rgb_chunck, fwd_hand_rgb_chunck,\
+        arm_action, gripper_action, arm_action_chunck, gripper_action_chunck, chunck_mask \
+        = self._process_batch(batch)
 
-        prediction = self.model.forward(rgb, hand_rgb, state, language, attention_mask)
+        prediction = self.model.forward(
+            rgb, 
+            language,
+            attention_mask=text_mask, 
+            action_labels=(arm_action_chunck, gripper_action_chunck),
+            action_mask=chunck_mask,
+            caption_labels=language.clone() if rgb.shape[1] == 1 else None,
+            caption_mask=text_mask.clone() if rgb.shape[1] == 1 else None,
+            vision_gripper=hand_rgb,
+            fwd_rgb_labels=fwd_rgb_chunck,
+            fwd_hand_rgb_chunck=fwd_hand_rgb_chunck,
+            fwd_mask=chunck_mask.clone(),
+        )
 
-        output = self._get_loss(
-            prediction, arm_action_target, gripper_action_target, attention_mask, seq_len)
+        output = self._get_loss(prediction)
         
         prog_bar_set = {'loss'}
         if self.act_pred:

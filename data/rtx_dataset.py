@@ -12,10 +12,10 @@ import numpy as np
 import torch
 import torchvision.transforms as T
 
-from decision_transformer.data.utils import list_all_files, grouping, list_dir_with_cache, b64_2_img, read_csv, collate_with_none
-from decision_transformer.utils.model_utils import build_tokenizer
-from decision_transformer.data.gr_dataset import RandomShiftsAug, RandomShiftsSingleAug
-from decision_transformer.utils.dist_train import get_rank
+from data.data_utils import list_all_files, grouping, list_dir_with_cache, b64_2_img, read_csv, collate_with_none
+from utils.model_utils import build_tokenizer
+from data.gr_dataset import RandomShiftsAug, RandomShiftsSingleAug
+from utils.dist_train import get_rank
 
 IMG_TO_TENSOR = T.ToTensor()
 

@@ -1,13 +1,13 @@
 import datasets
-from decision_transformer.data.utils import list_all_files, grouping, list_dir_with_cache
+from data.data_utils import list_all_files, grouping, list_dir_with_cache
 import random
 from itertools import chain
 import torch
-from decision_transformer.utils.model_utils import build_tokenizer
+from utils.model_utils import build_tokenizer
 import torchvision.transforms as T
 from PIL import Image
 from functools import partial
-from decision_transformer.data.utils import b64_2_img
+from data.data_utils import b64_2_img
 import numpy as np
 
 

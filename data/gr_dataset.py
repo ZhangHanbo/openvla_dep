@@ -4,6 +4,7 @@ This dataset contains language + video + action.
 
 Return: text, image sequence, action sequence, timestep, attention_mask
 """
+import torch
 import json
 import copy
 import os
@@ -15,19 +16,17 @@ from PIL import Image
 
 from decord import VideoReader, cpu
 
-import torch
-from torch.utils.data import default_collate
-from torch import nn
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import torchvision.transforms as T
 from typing import Tuple, List, Dict, Union, Optional
-from CLIP.clip import clip
+import clip
 import traceback
-
-from decision_transformer.utils.dist_train import get_rank
-from decision_transformer.utils.utils import b64_2_img
-from decision_transformer.utils.model_utils import build_tokenizer
+from utils.dist_train import get_rank
+from utils.utils import b64_2_img
+from utils.model_utils import build_tokenizer
+from data.data_utils import generate_chunck_data, get_text_function
 
 
 class RandomShiftsAug(nn.Module):
@@ -86,8 +85,11 @@ class GRDataset(Dataset):
             self,
             data_dir,
             tokenizer,
+            tokenizer_type='flamingo',
+            max_text_len=32,
             preprocess=None,
-            seq_len=10,
+            window_size=10,
+            fwd_pred_next_n=1,
             text_seq_len=77,
             image_size=224,
             patch_num=10,
@@ -98,7 +100,7 @@ class GRDataset(Dataset):
             use_hand_rgb=False,
             use_random_shift=False,
             shift_padding=(10, 4),
-            shift_first=True,
+            shift_first=False,
             use_mim_mask=False,
             vision_masked_ratio=0.8,
             use_tube_mask=True,
@@ -118,16 +120,22 @@ class GRDataset(Dataset):
         self.dataset_dir = data_dir
         self.use_random_shift = use_random_shift
         self.shift_first = shift_first
-        self.tokenizer = build_tokenizer(tokenizer_config=tokenizer)
-
+        # self.tokenizer = build_tokenizer(tokenizer_config=tokenizer)
+        self.tokenizer = tokenizer
+        self.tokenizer_type = tokenizer_type
+        self.text_fn = get_text_function(tokenizer, tokenizer_type, max_text_len)
         # initialize pad token
-        self.pad_token = self.tokenizer.pad_token
-        if self.pad_token is None:
-            self.pad_token = 0
-        else:
-            self.pad_token = self.tokenizer.convert_tokens_to_ids(self.pad_token)
-
+        # self.pad_token = self.tokenizer.pad_token
+        # if self.pad_token is None:
+        #     self.pad_token = 0
+        # else:
+        #     self.pad_token = self.tokenizer.convert_tokens_to_ids(self.pad_token)
+        
+        self.window_size = window_size
+        self.fwd_pred_next_n = fwd_pred_next_n
+        seq_len = window_size + fwd_pred_next_n
         self.seq_len = seq_len
+        
         self.text_seq_len = text_seq_len
         self.use_hand_rgb = use_hand_rgb
         self.use_mim_mask = use_mim_mask
@@ -239,18 +247,18 @@ class GRDataset(Dataset):
     def __len__(self):
         return len(self.ann_files)
 
-    def _get_text(self, label):
-        texts = label['texts']
-        assert len(texts) > 0 and isinstance(texts[0], str)
-        # FIXME: Returning texts[0] for now. But will need to handle list of texts for training.
-        text = texts[0]
-        tokens = self.tokenizer.tokenize(text)
-        tokenized_text_data = self.tokenizer.encode(tokens)
+    # def _get_text(self, label):
+    #     texts = label['texts']
+    #     assert len(texts) > 0 and isinstance(texts[0], str)
+    #     # FIXME: Returning texts[0] for now. But will need to handle list of texts for training.
+    #     text = texts[0]
+    #     tokens = self.tokenizer.tokenize(text)
+    #     tokenized_text_data = self.tokenizer.encode(tokens)
 
-        token_tensor = torch.zeros(self.text_seq_len).long().fill_(self.pad_token)
-        token_len = min(len(tokenized_text_data), self.text_seq_len)
-        token_tensor[:token_len] = torch.tensor(tokenized_text_data[:token_len])
-        return token_tensor
+    #     token_tensor = torch.zeros(self.text_seq_len).long().fill_(self.pad_token)
+    #     token_len = min(len(tokenized_text_data), self.text_seq_len)
+    #     token_tensor[:token_len] = torch.tensor(tokenized_text_data[:token_len])
+    #     return token_tensor
 
     def _reformat_input_seq(self, label):
         # reformat input seq
@@ -305,6 +313,7 @@ class GRDataset(Dataset):
 
     def _load_video_decord(self, video_path: str, frame_ids: Optional[List[int]]=None) -> np.ndarray:
         """Load video content using Decord"""
+        video_path = video_path.replace('/mnt/bn/apretrain/arnold/grdata/data/media', '/mnt/bn/robotics-real-data/data_gr2_zhb/media')
         vr = VideoReader(video_path, ctx=cpu(0), num_threads=2)
         if frame_ids is None:
             # sample self.seq_len frames uniformly
@@ -448,17 +457,17 @@ class GRDataset(Dataset):
             label = self._reformat_input_seq(label)
             static_rgbs, hand_rgbs, _, _ = self._get_obs(label)
             actions = self._get_action_sequence(label)
-            tokenized_text_data = self._get_text(label)
+            text = random.choice(label['texts'])
 
             tlen = len(static_rgbs)
             is_action_available = actions is not None
             is_hand_available = len(hand_rgbs) > 0
 
             if is_action_available:
-                tlen -= 1
-                static_rgbs = static_rgbs[:-1]
-                hand_rgbs = hand_rgbs[:-1]
-                assert tlen == len(actions)
+                # tlen -= 1
+                # static_rgbs = static_rgbs[:-1]
+                # hand_rgbs = hand_rgbs[:-1]
+                assert tlen == len(actions) + 1
 
             if is_hand_available: assert tlen == len(hand_rgbs)
 
@@ -477,13 +486,15 @@ class GRDataset(Dataset):
                 hand_mim_mask = np.ones_like(mim_mask)
 
             padded_static_rgbs[:tlen] = static_rgbs
-            if is_hand_available: padded_hand_rgbs[:tlen] = hand_rgbs
-            if is_action_available: padded_actions[:tlen] = actions
+            if is_hand_available: 
+                padded_hand_rgbs[:tlen] = hand_rgbs
+            if is_action_available: 
+                padded_actions[1:tlen] = actions
             attention_mask[tlen:] = 0.0
 
             rgb_data = padded_static_rgbs
             hand_rgb_data = padded_hand_rgbs if self.use_hand_rgb and is_hand_available else None
-            action_data = padded_actions
+            action_data = padded_actions if is_action_available else None
             attention_mask_data = torch.from_numpy(attention_mask).long()
             mim_mask_data = torch.from_numpy(mim_mask).long() if self.use_mim_mask else None
             hand_mim_mask_data = torch.from_numpy(hand_mim_mask).long() \
@@ -493,7 +504,7 @@ class GRDataset(Dataset):
             data = dict()
             data['rgb'] = rgb_data
             data['hand_rgb'] = hand_rgb_data
-            data['language'] = tokenized_text_data
+            data['raw_text'] = text
             data['action'] = action_data
             data['attention_mask'] = attention_mask_data
             data['mim_mask'] = mim_mask_data
@@ -507,6 +518,97 @@ class GRDataset(Dataset):
             warnings.warn(traceback.format_exc())
             return self[np.random.randint(len(self.ann_files))]
 
-    def collator(self, sample):
+    def collater(self, data):
+        # action_tensors = torch.from_numpy(np.array([np.stack(s["action"]) for s in data]))
+        # print(data)
+        action_tensors = torch.stack([s["action"] for s in data], dim=0) if data[0]['action'] is not None else None
+        image_tensors = torch.stack([s["rgb"] for s in data])
+        image_mask = torch.stack([s["attention_mask"] for s in data])
+        gripper_tensors = torch.stack([s["hand_rgb"] for s in data]) if data[0]['hand_rgb'] is not None else None
+
+        fwd_rgb_chunck = generate_chunck_data(image_tensors, self.window_size, self.fwd_pred_next_n)
+        fwd_hand_rgb_chunck = generate_chunck_data(gripper_tensors, self.window_size, self.fwd_pred_next_n)
+        chunck_mask = generate_chunck_data(image_mask, self.window_size, self.fwd_pred_next_n)
         
-        pass
+        action_chunk = generate_chunck_data(action_tensors, self.window_size, self.fwd_pred_next_n)
+
+        stacked_language = [s["raw_text"] for s in data]
+        text_tensors, text_mask = self.text_fn(stacked_language)
+
+        res = {
+            "rgb": image_tensors,
+            "attention_mask": image_mask,
+            "hand_rgb": gripper_tensors,
+            "action": action_tensors,
+            "text": text_tensors,
+            "text_mask": text_mask,
+            "fwd_rgb_chunck": fwd_rgb_chunck,
+            "fwd_hand_rgb_chunck": fwd_hand_rgb_chunck,
+            "action_chunk": action_chunk,
+            "chunck_mask": chunck_mask
+        }
+        
+        # return image_tensors, (text_tensors, text_mask), action_tensors, gripper_tensors, image_mask,\
+        #     fwd_rgb_chunck, fwd_hand_rgb_chunck, action_chunk
+        return res
+
+
+if __name__ == "__main__":
+    from torch.utils.data import DataLoader
+    
+    data_path = "/mnt/bn/robotics-real-data/data_gr2_zhb/anns/ego4d/gr2-1121/train/json/"
+    data_path = "/mnt/bn/robotics-data-hl/real_data/gr2_labels_1110/CALVIN/task_ABCD_D/val"
+    # data_path = "/mnt/bn/robotics-lq2024/zhb/gr2_data/anns/ego4d/gr2-1130/train/json"
+    # data_path = "/mnt/bn/robotics-lq2024/zhb/gr2_data/anns/ego4d/gr2-1120compressed/train/json"
+    print('start loading clip')
+    _, clip_preprocess = clip.load('ViT-B/32', device='cpu')
+    print('clip loaded')
+    from transformers import AutoTokenizer
+    import functools
+    
+    def preprocess_text_calvin(sample, tokenizer):
+        tokenizer.padding_side = "right"
+        sample = [
+            # (f"{s.strip()}{tokenizer.eos_token}")
+            # for s in sample
+            (f"<image>{s.strip()}<|endofchunk|>{tokenizer.eos_token}") for s in sample
+        ]
+        text = tokenizer(
+            sample,
+            max_length=32,
+            padding="longest",
+            truncation="only_first",
+            return_tensors="pt",
+        )
+        return text["input_ids"], text["attention_mask"]
+
+    tokenizer = AutoTokenizer.from_pretrained("/mnt/bn/robotics/lxh/mpt-1b-redpajama-200b-dolly", local_files_only=True)
+    tokenizer.add_special_tokens(
+        {"additional_special_tokens": ["<|endofchunk|>", "<image>"]}
+    )
+    tokenizer.add_special_tokens({"pad_token": "<PAD>"})
+    seq_len = 12
+    preprocess_text_fn = functools.partial(preprocess_text_calvin, tokenizer=tokenizer)
+    dataset = GRDataset(
+        data_dir=data_path,
+        # text_fn=preprocess_text_fn,
+        tokenizer=tokenizer,
+        preprocess=None,
+        seq_len=12,
+        fwd_pred_next_n=1,
+        mode='train',
+        obs_mode='image'
+    )
+    dataloader = DataLoader(dataset, batch_size=2, shuffle=True, num_workers=0, collate_fn=dataset.collater)
+    for i, data in enumerate(dataloader):
+        for d in data:
+            if d is None:
+                continue
+            if isinstance(d, tuple):
+                print(d[0].shape, d[1].shape)
+            else:
+                print(d.shape)
+            print(d)
+            # print(d, data[d])
+        exit(0)
+    pass

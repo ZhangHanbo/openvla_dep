@@ -1,12 +1,12 @@
 import os
 import warnings
 
-import decision_transformer.data as datasets
+import data as datasets
 from typing import Optional, List, Dict
 from torch.utils.data import ConcatDataset as _ConcatDataset
 import numpy as np
 import bisect
-from decision_transformer.utils.dist_train import get_rank
+from utils.dist_train import get_rank
 
 
 class ConcatDataset(_ConcatDataset):

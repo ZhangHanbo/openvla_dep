@@ -1,0 +1,166 @@
+{
+    "parent": "default_pretrain",
+    "model": "flamingo",
+    "seq_len": 12,
+    "image_size": 224,
+    "image_mean": [0.48145466, 0.4578275, 0.40821073],
+    "image_std": [0.26862954, 0.26130258, 0.27577711],
+    "seed": 123,
+    "batch_size": [120, 8],
+    "num_workers": [8, 4],
+    "data_scale": 1,
+    "optimizer": "adam",
+    "learning_rate": 1e-4,
+    "min_lr_scale": 1e-2,
+    "weight_decay": 0,
+    "warmup_epochs": 10,
+    "warmup_ratio": null,
+    "use_hand_rgb": false,
+    "use_time_causal_attn": false,
+    "use_mim_obs_loss": false,
+    "use_pixel_loss": true,
+    "use_obs_queries": true,
+    "vision_masked_ratio": 0.9,
+    "use_tube_mask": false,
+    "output_root": "zhb/checkpoints/video_pretrain_manipulation/pretrain",
+    "log_root": "/mnt/bn/robotics-data-hl/zhb/logs/video_pretrain_manipulation/pretrain",
+    "cache_root": "/mnt/bn/robotics-data-hl/zhb/cache",
+    "model_load_path": null,
+    "model_load_source": "torch",
+    "resume": null,
+    "llm": {
+        "type": "gpt2",
+        "vocab_size": 1,
+        "n_embd": 384,
+        "n_layer": 12,
+        "n_head": 12,
+        "activation_function": "relu",
+        "dropout": 0.1,
+        "n_positions": 2048,
+        "from_pretrained": false
+    },
+    "tokenizer": {
+        "type": "CLIPTokenizer",
+        "pretrained_model_name_or_path": "openai/clip-vit-base-patch32"
+    },
+    "text_encoder": {
+        "type": "CLIPTextEncoder",
+        "model": "ViT-B/32"
+    },
+    "vision_encoder": {
+        "type": "MAEEncoder",
+        "model": "vit_base",
+        "model_load_path": "/mnt/bn/robotics-data-hl/models/mae_pretrain_vit_base.pth",
+        "patch_size": 16,
+        "encoder_finetune_layer_n": 0,
+        "patch_encoder": {
+            "type": "ResamplerPatchEncoder",
+            "n_patch_latents": 9,
+            "depth": 3,
+            "dim_head": 128,
+            "heads": 4,
+            "num_media_embeds": 1
+        },
+        "with_shared_vision_encoder": false
+    },
+    "act_encoder": null,
+    "act_head": null,
+    "fwd_head": {
+        "type": "LinearForwardPredHead",
+        "fwd_loss_ratio": 1.0,
+        "without_norm_pix_loss": false,
+        "fwd_pred_next_n": 1
+    },
+    "trainer": {
+        "accelerator": "gpu",
+        "strategy": "deepspeed_stage_3",
+        "precision": "bf16",
+        "logger": ["tensorboard"],
+        "gradient_clip_val": 1.0,
+        "use_distributed_sampler": false,
+        "log_every_n_steps": 100,
+        "max_epochs": null,
+        "val_check_interval": 2500,
+        "check_val_every_n_epoch": null,
+        "max_steps": 1.25e5
+    },
+    "train_dataset": [
+        {
+            "type": "ConcatDataset",
+            "datasets": [
+                {
+                    "type": "GRDataset",
+                    "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/gr_data/anns/ego4d/gr2-1121/train/json",
+                    "shift_first": false,
+                    "tokenizer_type": "flamingo"
+                },
+                {
+                    "type": "GRDataset",
+                    "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/gr_data/anns/epickitchen/gr2-1201/train/json",
+                    "shift_first": false,
+                    "tokenizer_type": "flamingo"
+                },
+                {
+                    "type": "GRDataset",
+                    "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/gr_data/anns/k700/gr2-1201new/train/json",
+                    "shift_first": false,
+                    "tokenizer_type": "flamingo"
+                },
+                {
+                    "type": "GRDataset",
+                    "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/gr_data/anns/ssv2/gr2-1129/train/json",
+                    "shift_first": false,
+                    "tokenizer_type": "flamingo"
+                },
+                {
+                    "type": "GRDataset",
+                    "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/gr_data/anns/howto100m/gr2-1128/train/json/",
+                    "shift_first": false,
+                    "tokenizer_type": "flamingo"
+                }
+            ],
+            "sampler": {
+                "type": "DistributedWeightedSampler",
+                "weights": [1.2, 0.16, 0.4, 0.24, 5.0],
+                "sample_per_epoch": 2000000
+            }
+        },
+        {
+            "type": "RTXDataset",
+            "black_list":
+            [
+                "stanford_hydra_dataset_converted_externally_to_rlds/part_0.parquet",
+                "austin_sailor_dataset_converted_externally_to_rlds/part_0.parquet",
+                "berkeley_rpt_converted_externally_to_rlds/part_1.parquet",
+                "berkeley_rpt_converted_externally_to_rlds/part_0.parquet",
+                "furniture_bench_dataset_converted_externally_to_rlds/part_1.parquet",
+                "furniture_bench_dataset_converted_externally_to_rlds/part_0.parquet",
+                "iamlab_cmu_pickup_insert_converted_externally_to_rlds/part_0.parquet"
+            ],
+            "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/rtx/vldata_parquet/",
+            "buffer_size": 2000
+        }
+    ],
+    "val_dataset": [
+        {
+            "type": "GRDataset",
+            "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/ego4d/gr2-1121/val/json/"
+        },
+        {
+            "type": "GRDataset",
+            "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/Bridge/240206/val/"
+        },
+        {
+            "type": "GRDataset",
+            "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/RT-1/240206/val/"
+        },
+        {
+            "type": "GRDataset",
+            "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/Mode1/240206/val/"
+        },
+        {
+            "type": "GRDataset",
+            "data_dir": "/mnt/bn/robotics-lq2024/gr_data/anns/Mode3/240206/val/"
+        }
+    ]
+}

@@ -8,7 +8,8 @@ from PIL import Image
 from tqdm import tqdm
 import json
 import csv
-
+import torch
+from einops import rearrange, repeat
 
 def collate_with_none(batch):
     assert isinstance(batch[0], dict)
@@ -66,7 +67,7 @@ def list_all_files(dirs, verbose=False):
     return all_files
 
 def list_dir_with_cache(data_dir, cache_dir=None, verbose=True):
-    from decision_transformer.utils.dist_train import get_rank
+    from utils.dist_train import get_rank
     data_dir = data_dir.rstrip('/')
 
     if cache_dir is None:
@@ -126,3 +127,55 @@ def read_csv(rpath, encoding=None, **kwargs):
         return data
     except:
         return []
+    
+
+def claw_matrix(n, k, device='cpu'):
+
+    upper_triangle_matrix = torch.triu(torch.ones(n, n), diagonal=0).to(device)
+    lower_triangle_matrix = torch.tril(torch.ones(n, n), diagonal=k).to(device)
+    
+    claw = upper_triangle_matrix * lower_triangle_matrix
+    
+    return claw
+
+def generate_chunck_data(data, window_size, chunk_size):
+    if data is None:
+        return None
+    bs, seq_len = data.shape[:2]
+    raw_data_shape = data.shape[2:]
+    data_flatten = data.flatten().view(bs, seq_len, -1)
+    assert seq_len == window_size + chunk_size, f"The sequence length should be {window_size + chunk_size}"
+    data_flatten = repeat(data_flatten, 'b s d -> b w s d', w=window_size)
+
+    mask = claw_matrix(seq_len, chunk_size, data_flatten.device)
+    mask = mask - torch.diag_embed(mask.diag()) # set current obs mask to 0
+    mask = mask[:window_size].bool()
+    
+    mask = repeat(mask, 'w s -> b w s d', b=bs, d=data_flatten.shape[-1])
+    data_flatten = torch.masked_select(data_flatten, mask)
+
+    data_flatten = data_flatten.view(bs, window_size, chunk_size, *raw_data_shape)
+    
+    return data_flatten
+
+def get_text_function(tokenizer, tokenizer_type, max_length):
+    import functools
+    if tokenizer_type == 'flamingo':
+        def preprocess_text_flamingo(sample, tokenizer):
+            tokenizer.padding_side = "right"
+            sample = [
+                # (f"{s.strip()}{tokenizer.eos_token}")
+                # for s in sample
+                (f"<image>{s.strip()}<|endofchunk|>{tokenizer.eos_token}") for s in sample
+            ]
+            text = tokenizer(
+                sample,
+                max_length=max_length,
+                padding="longest",
+                truncation="only_first",
+                return_tensors="pt",
+            )
+            return text["input_ids"], text["attention_mask"]
+        return functools.partial(preprocess_text_flamingo, tokenizer=tokenizer)
+    else:
+        raise NotImplementedError

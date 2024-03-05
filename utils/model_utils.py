@@ -125,6 +125,30 @@ def get_target_modal_tokens(tok_seq, tok_mask):
     index = tok_mask.nonzero(as_tuple=True)
     return tok_seq[index]
 
+
+def preprocess_text_flamingo(sample, tokenizer):
+    tokenizer.padding_side = "right"
+    sample = [
+        # (f"{s.strip()}{tokenizer.eos_token}")
+        # for s in sample
+        (f"<image>{s.strip()}<|endofchunk|>{tokenizer.eos_token}") for s in sample
+    ]
+    text = tokenizer(
+        sample,
+        max_length=32,
+        padding="longest",
+        truncation="only_first",
+        return_tensors="pt",
+    )
+    return text["input_ids"], text["attention_mask"]
+
+
+def build_text_function(tokenizer, llm_type):
+    if llm_type == "flamingo":
+        text_fn = preprocess_text_flamingo
+    else:
+        raise NotImplementedError
+
 # def get_modal_tokens(tok_seq, tok_mask_dict, modal_name):
 #     assert modal_name in tok_mask_dict, f"{modal_name} not in token sequence"
 #     return get_target_modal_tokens(tok_seq, tok_mask_dict[modal_name])
