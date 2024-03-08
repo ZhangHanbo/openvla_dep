@@ -4,7 +4,7 @@ import random
 import numpy as np
 
 from torch.utils.data import Sampler, DistributedSampler
-from decision_transformer.data.concat_dataset import ConcatDataset
+from data.concat_dataset import ConcatDataset
 import torch.distributed as dist
 
 

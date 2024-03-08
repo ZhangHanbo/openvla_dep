@@ -85,8 +85,6 @@ class GRDataset(Dataset):
             self,
             data_dir,
             tokenizer,
-            tokenizer_type='flamingo',
-            max_text_len=32,
             preprocess=None,
             window_size=10,
             fwd_pred_next_n=1,
@@ -120,10 +118,10 @@ class GRDataset(Dataset):
         self.dataset_dir = data_dir
         self.use_random_shift = use_random_shift
         self.shift_first = shift_first
-        # self.tokenizer = build_tokenizer(tokenizer_config=tokenizer)
-        self.tokenizer = tokenizer
-        self.tokenizer_type = tokenizer_type
-        self.text_fn = get_text_function(tokenizer, tokenizer_type, max_text_len)
+        self.tokenizer = build_tokenizer(tokenizer_config=tokenizer)
+        self.tokenizer_type = tokenizer['tokenizer_type']
+        self.max_text_len = tokenizer['max_text_len']
+        self.text_fn = get_text_function(self.tokenizer, self.tokenizer_type, self.max_text_len)
         # initialize pad token
         # self.pad_token = self.tokenizer.pad_token
         # if self.pad_token is None:
@@ -530,7 +528,7 @@ class GRDataset(Dataset):
         fwd_hand_rgb_chunck = generate_chunck_data(gripper_tensors, self.window_size, self.fwd_pred_next_n)
         chunck_mask = generate_chunck_data(image_mask, self.window_size, self.fwd_pred_next_n)
         
-        action_chunk = generate_chunck_data(action_tensors, self.window_size, self.fwd_pred_next_n)
+        action_chunck = generate_chunck_data(action_tensors, self.window_size, self.fwd_pred_next_n)
 
         stacked_language = [s["raw_text"] for s in data]
         text_tensors, text_mask = self.text_fn(stacked_language)
@@ -544,7 +542,7 @@ class GRDataset(Dataset):
             "text_mask": text_mask,
             "fwd_rgb_chunck": fwd_rgb_chunck,
             "fwd_hand_rgb_chunck": fwd_hand_rgb_chunck,
-            "action_chunk": action_chunk,
+            "action_chunck": action_chunck,
             "chunck_mask": chunck_mask
         }
         
@@ -602,6 +600,8 @@ if __name__ == "__main__":
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True, num_workers=0, collate_fn=dataset.collater)
     for i, data in enumerate(dataloader):
         for d in data:
+            print(d, data[d])
+            continue
             if d is None:
                 continue
             if isinstance(d, tuple):

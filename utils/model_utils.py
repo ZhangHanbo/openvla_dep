@@ -121,6 +121,7 @@ def build_tokenizer(tokenizer_config, new_tokens=None):
         tokenizer.pad_token = tokenizer.add_special_tokens({"pad_token": "<PAD>"})
 
     assert tokenizer.vocab_size < 2 ** 16
+    return tokenizer
 
 
 def get_target_modal_tokens(tok_seq, tok_mask):
@@ -144,12 +145,6 @@ def preprocess_text_flamingo(sample, tokenizer):
     )
     return text["input_ids"], text["attention_mask"]
 
-
-def build_text_function(tokenizer, llm_type):
-    if llm_type == "flamingo":
-        text_fn = preprocess_text_flamingo
-    else:
-        raise NotImplementedError
 
 # def get_modal_tokens(tok_seq, tok_mask_dict, modal_name):
 #     assert modal_name in tok_mask_dict, f"{modal_name} not in token sequence"

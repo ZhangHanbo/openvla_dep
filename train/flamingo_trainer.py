@@ -11,10 +11,9 @@ import math
 from model.backbone.flamingo import RoboFlamingo
 from utils.dist_train import get_rank
 
-import clip
 import lightning.pytorch as pl
 
-from train.train_utils import smooth_l1_loss, adjust_learning_rate, generate_chunck_data
+from train.train_utils import adjust_learning_rate
 
 
 class FlamingoTrainer(pl.LightningModule):
@@ -57,8 +56,8 @@ class FlamingoTrainer(pl.LightningModule):
         self.finetune = self.configs['finetune']
         self.no_video_pretrained_model = self.configs['no_video_pretrained_model']
 
-        self = self._init_policy()
-
+        self.model = self._init_policy()
+        self.cap_loss_ratio = self.configs['cap_loss_ratio']
         self.arm_gripper_loss_ratio = self.configs['arm_gripper_loss_ratio']
         self.fwd_loss_ratio = self.configs['fwd_loss_ratio']
 
@@ -84,6 +83,7 @@ class FlamingoTrainer(pl.LightningModule):
             window_size=self.configs['seq_len'],
             use_hand_rgb=self.use_hand_rgb,
             act_head_configs=self.configs['act_head'],
+            fwd_pred_next_n=self.configs['fwd_pred_next_n']
         )
 
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -201,18 +201,27 @@ class FlamingoTrainer(pl.LightningModule):
             seq_len = 1
         """
         
-
+        # print(type(batch), len(batch))
+        if isinstance(batch, list):
+            # print(batch[0].keys())
+            batch = batch[0]
         rgb = batch['rgb'].cuda()
         if len(rgb.shape) == 4:
             rgb = rgb.unsqueeze(1)
         assert len(rgb.shape) == 5
         if isinstance(batch['text'], list) and isinstance(batch['text'][0], str):
             raise ValueError('The raw text data is not supported')
-        else: 
-            language = batch['text'].cuda()
-            text_mask = batch['text_mask'].cuda()
+        else:
+            seq_len = batch['rgb'].shape[1]
+            if seq_len > 1:
+                seq_len -= self.configs['fwd_pred_next_n']
+            language = batch['text'].unsqueeze(1).repeat(1, seq_len, 1).cuda()
+            text_mask = batch['text_mask'].unsqueeze(1).repeat(1, seq_len, 1).cuda()
+
+            language = language.flatten(0, 1)
+            text_mask = text_mask.flatten(0, 1)
         
-        if batch.get('action', None):
+        if batch.get('action', None) is not None:
             action = batch['action'].cuda()
         else:
             action = None
@@ -251,7 +260,6 @@ class FlamingoTrainer(pl.LightningModule):
         
                 
         fwd_pred_next_n = self.configs['fwd_pred_next_n']
-        seq_len = batch['rgb'].shape[1]
 
         caption_flag = False
         if seq_len == 1:
@@ -269,7 +277,7 @@ class FlamingoTrainer(pl.LightningModule):
         arm_action, gripper_action, arm_action_chunck, gripper_action_chunck, chunck_mask
 
     def _get_loss(self, prediction):
-        
+        # print(prediction)
         loss_arm_act = prediction.get('loss_arm_act', None)
         loss_gripper_act = prediction.get('loss_gripper_act', None)
         loss_obs = prediction.get('loss_obs_fwd', None)
@@ -319,14 +327,25 @@ class FlamingoTrainer(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         with torch.no_grad():
-            rgb, hand_rgb, state, language, attention_mask, \
-            arm_action_target, gripper_action_target, seq_len \
-                = self._process_batch(batch)
+            rgb, hand_rgb, attention_mask, language, text_mask, fwd_rgb_chunck, fwd_hand_rgb_chunck,\
+            arm_action, gripper_action, arm_action_chunck, gripper_action_chunck, chunck_mask \
+            = self._process_batch(batch)
 
-            prediction = self.model.forward(rgb, hand_rgb, state, language, attention_mask)
+            prediction = self.model.forward(
+                rgb, 
+                language,
+                attention_mask=text_mask, 
+                action_labels=(arm_action_chunck, gripper_action_chunck),
+                action_mask=chunck_mask,
+                caption_labels=language.clone() if rgb.shape[1] == 1 else None,
+                caption_mask=text_mask.clone() if rgb.shape[1] == 1 else None,
+                vision_gripper=hand_rgb,
+                fwd_rgb_labels=fwd_rgb_chunck,
+                fwd_hand_rgb_chunck=fwd_hand_rgb_chunck,
+                fwd_mask=chunck_mask.clone(),
+            )
 
-            output = self._get_loss(
-                prediction, arm_action_target, gripper_action_target, attention_mask, seq_len)
+            output = self._get_loss(prediction)
             
             prog_bar_set = {'loss'}
             if self.act_pred:

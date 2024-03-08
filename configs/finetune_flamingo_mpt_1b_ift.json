@@ -1,0 +1,103 @@
+{
+    "parent": null,
+    "model": "flamingo",
+    "seq_len": 13,
+    "fwd_pred_next_n": 1,
+    "arm_gripper_loss_ratio": 0,
+    "cap_loss_ratio": 0.05,
+    "fwd_loss_ratio": 0,
+    "window_size": 12,
+    "image_size": 224,
+    "image_mean": [0.48145466, 0.4578275, 0.40821073],
+    "image_std": [0.26862954, 0.26130258, 0.27577711],
+    "seed": 123,
+    "batch_size": 16,
+    "num_workers": 8,
+    "data_scale": 1,
+    "optimizer": "adam",
+    "learning_rate": 1e-4,
+    "min_lr_scale": 1e-2,
+    "weight_decay": 0,
+    "warmup_epochs": 10,
+    "warmup_ratio": null,
+    "use_hand_rgb": true,
+    "use_time_causal_attn": false,
+    "use_mim_obs_loss": false,
+    "use_pixel_loss": true,
+    "use_obs_queries": true,
+    "vision_masked_ratio": 0.9,
+    "use_tube_mask": false,
+    "output_root": "/mnt/bn/robotics-data-lxh-lq/checkpoints/video_pretrain_manipulation/calvin_finetune",
+    "log_root": "/mnt/bn/robotics-data-lxh-lq/logs/video_pretrain_manipulation/calvin_finetune",
+    "cache_root": "/mnt/bn/robotics-data-lxh-lq/cache/video_pretrain_manipulation",
+    "model_load_path": null,
+    "model_load_source": "torch",
+    "resume": null,
+    "vision_encoder": {
+        "clip_vision_encoder_path": "ViT-L-14",
+        "clip_vision_encoder_pretrained": "openai"
+    },
+    "llm": {
+        "type": "AutoModelForCausalLM",
+        "pretrained_model_name_or_path": "/mnt/bn/robotics/lxh/mpt-1b-redpajama-200b-dolly",
+        "name": "mpt_1b_ift",
+        "residual": false
+    },
+    "tokenizer": {
+        "type": "AutoTokenizer",
+        "pretrained_model_name_or_path": "/mnt/bn/robotics/lxh/mpt-1b-redpajama-200b-dolly",
+        "tokenizer_type": "flamingo",
+        "max_text_len": 32
+    },
+    "train_setup": {
+        "predict_action": true,
+        "predict_forward": false,
+        "predict_forward_hand": false,
+        "predict_caption": false,
+        "train_vision": false,
+        "train_resampler": true,
+        "train_text_embedding": true,
+        "train_full_decoder": false,
+        "train_decoder_layers": -1
+    },
+    "act_encoder": null,
+    "act_head": {
+        "type": "LSTMDecoder",
+        "hidden_size": 4096,
+        "action_dim": 7,
+        "down_sample": "pooling",
+        "latent": 1,
+        "fwd_pred_next_n": 1,
+        "window_size": 1,
+        "lstm_hs": 1024
+    },
+    "fwd_head": null,
+    "trainer": {
+        "accelerator": "gpu",
+        "strategy": "deepspeed_stage_3",
+        "precision": "16-mixed",
+        "logger": ["tensorboard"],
+        "gradient_clip_val": 1.0,
+        "use_distributed_sampler": false,
+        "log_every_n_steps": 100,
+        "max_epochs": 5,
+        "val_check_interval": 2500,
+        "check_val_every_n_epoch": null,
+        "max_steps": 1.25e5
+    },
+    "train_dataset": [
+        {
+            "type": "GRDataset",
+            "data_dir": "/mnt/bn/robotics-data-hl/real_data/gr2_labels_1110/CALVIN/task_ABCD_D/train",
+            "shift_first": false,
+            "tokenizer_type": "flamingo"
+        }
+    ],
+    "val_dataset": [
+        {
+            "type": "GRDataset",
+            "data_dir": "/mnt/bn/robotics-data-hl/real_data/gr2_labels_1110/CALVIN/task_ABCD_D/val",
+            "tokenizer_type": "flamingo"
+        }
+    ]
+}

@@ -5,9 +5,9 @@ import copy
 from typing import Tuple
 
 from open_flamingo.src.helpers import PerceiverResampler
-from robot_flamingo.models.action_head import DeterministicDecoder, DiffusionDecoder, FCDecoder, GPTDecoder
 from collections import namedtuple
 from einops import rearrange, repeat
+import open_clip
 
 from utils.model_utils import build_tokenizer, get_target_modal_tokens
 from model.vision_encoder.vision_transformer import clip_vision_encoder
@@ -39,6 +39,7 @@ class RoboFlamingo(nn.Module):
             use_time_causal_attn=True,
             vision_masked_ratio=0.9,
             use_tube_mask=False,
+            fwd_pred_next_n=1,
             **kwargs
             ):
         super().__init__()
@@ -51,6 +52,17 @@ class RoboFlamingo(nn.Module):
         self.use_time_causal_attn = use_time_causal_attn
         self.vision_masked_ratio = vision_masked_ratio
         self.use_tube_mask = use_tube_mask
+        self.fwd_pred_next_n = fwd_pred_next_n
+
+        # Copy configs
+        self.vision_encoder_configs = vision_encoder_configs
+        clip_vision_encoder_path = vision_encoder_configs["clip_vision_encoder_path"]
+        self.vis_dim = open_clip.get_model_config(clip_vision_encoder_path)["vision_cfg"]["width"]
+        self.act_encoder_configs = act_encoder_configs
+        self.act_head_configs = act_head_configs
+        self.fwd_head_configs = fwd_head_configs
+        self.train_setup_configs = train_setup_configs
+        self.llm_configs = llm_configs
 
         # Initialize tokenizer
         self.tokenizer = build_tokenizer(tokenizer_configs, new_tokens=["<|endofchunk|>", "<image>"])
@@ -59,27 +71,20 @@ class RoboFlamingo(nn.Module):
         # Initialize vision encoder
         self.vision_encoder, _, self.vis_dim = self._init_vision_encoder()
 
-        self.llm_configs = llm_configs
         self.lang_encoder = self._init_llm()
 
-        self.vision_encoder_configs = vision_encoder_configs
-
-        self.vis_dim = self.vision_encoder_configs['vis_dim']
         self.perceiver = PerceiverResampler(dim=self.vis_dim)
 
-        self.act_encoder_configs = act_encoder_configs
-        self.act_head_configs = act_head_configs
-        self.fwd_head_configs = fwd_head_configs
+        self.load_openflamingo_ckpt()
         
         self.act_head, self.fwd_head = self._init_heads()
 
-        self.train_setup_configs = train_setup_configs
         self._trainable_params_setup()
     
     def _init_llm(self):
         lang_encoder = build_llm_flamingo(self.llm_configs)
-        lang_encoder_path = self.llm_configs if isinstance(self.llm_configs, str) else self.llm_configs['type']
-        if "mpt_1b" in lang_encoder_path:
+        lang_encoder_path = self.llm_configs if isinstance(self.llm_configs, str) else self.llm_configs['pretrained_model_name_or_path']
+        if "mpt-1b" in lang_encoder_path or "MPT1b" in lang_encoder_path:
             class EmbeddingFnMixin:
                 def get_input_embeddings(self):
                     return self.transformer.wte
@@ -87,20 +92,27 @@ class RoboFlamingo(nn.Module):
                 def set_input_embeddings(self, new_embeddings):
                     self.transformer.wte = new_embeddings
             extend_instance(lang_encoder, EmbeddingFnMixin)
-        
+
         extend_instance(lang_encoder, FlamingoLMMixin)
         
-        if decoder_layers_attr_name is None:
-            decoder_layers_attr_name = _infer_decoder_layers_attr_name(lang_encoder)
+        decoder_layers_attr_name = _infer_decoder_layers_attr_name(lang_encoder)
         lang_encoder.set_decoder_layers_attr_name(decoder_layers_attr_name)
         
         lang_encoder.resize_token_embeddings(len(self.tokenizer))
 
+        if hasattr(lang_encoder.config, "d_model"):
+            lang_dim = lang_encoder.config.d_model  # mpt uses d_model
+        else:
+            lang_dim = lang_encoder.config.hidden_size
+
+        self.lang_dim = lang_dim
+
         lang_encoder.init_flamingo(
             media_token_id=self.media_token_id,
+            lang_hidden_size=lang_dim,
+            gradient_checkpointing=False,
             vis_hidden_size=self.vis_dim,
-            cross_attn_every_n_layers=flamingo_model_configs['cross_attn_every_n_layers'],
-            use_media_placement_augmentation=False,
+            cross_attn_every_n_layers=flamingo_model_configs[self.llm_configs['name']]['cross_attn_every_n_layers'],
             residual=self.llm_configs['residual'],
         )
         if hasattr(lang_encoder.config, "d_model"):
@@ -111,9 +123,15 @@ class RoboFlamingo(nn.Module):
         self.num_transformer_params = sum([p.numel() for p in lang_encoder.parameters()])
 
         return lang_encoder
+    
+    def load_openflamingo_ckpt(self):
+        checkpoint_path = flamingo_model_configs[self.llm_configs['name']]['openflamingo_checkpoint']
+        self.load_state_dict(torch.load(checkpoint_path), strict=False)
+        if self.llm_configs['residual']:
+            self.lang_encoder.clone_parameters()
 
     def _init_vision_encoder(self):
-        return clip_vision_encoder(self.vision_encoder_configs['vision_encoder_path'], self.vision_encoder_configs['vision_encoder_pretrained'])
+        return clip_vision_encoder(self.vision_encoder_configs['clip_vision_encoder_path'], self.vision_encoder_configs['clip_vision_encoder_pretrained'])
 
     def _trainable_params_setup(self):
         self.requires_grad_(False)
@@ -144,13 +162,15 @@ class RoboFlamingo(nn.Module):
         if self.act_head_configs is not None:
             import model.policy_head.base_policy as action_heads
             _kwargs = copy.deepcopy(self.act_head_configs)
-            _kwargs.update(dict(hidden_size=self.hidden_size))
+            _kwargs.update(dict(hidden_size=self.hidden_size, 
+                                in_features=self.lang_dim,
+                                fwd_pred_next_n=self.fwd_pred_next_n))
             _cls = getattr(action_heads, _kwargs.pop('type'))
             action_head = _cls(**_kwargs)
 
         fwd_decoder = None
         if self.fwd_head_configs is not None:
-            import decision_transformer.models.modules.fwd_heads as fwd_heads
+            import model.forward_head as fwd_heads
             _kwargs = copy.deepcopy(self.fwd_head_configs)
             _kwargs.update(dict(image_size=self.vision_encoder.image_size,
                                 patch_size=self.vision_encoder.patch_size,
@@ -174,11 +194,13 @@ class RoboFlamingo(nn.Module):
     def _get_obs_embed(self, rgb):
 
         batch_size, seq_length, c, h, w = rgb.shape
-        rgb = rgb.view(batch_size * seq_length, c, h, w)
-        patch_embeddings = self.vision_encoder.visual(rgb)[1] # b*l, v, d
+        rgb = rgb.reshape(batch_size * seq_length, c, h, w)
+        # print('rgb input shape', rgb.shape)
+        patch_embeddings = self.vision_encoder.visual(rgb)[1].unsqueeze(1).unsqueeze(1) # b*l, v, d
+        # print('path_embedding shape after vit', patch_embeddings.shape)
         # patch_embeddings = patch_embeddings.view(batch_size, seq_length, *patch_embeddings.shape[1:])
         
-        patch_embeddings = patch_embeddings.unsqueeze(1).unsqueeze(1) # b*l, 1, 1, v, d
+        # patch_embeddings = patch_embeddings.unsqueeze(1).unsqueeze(1) # b*l, 1, 1, v, d
         patch_embeddings = self.perceiver(patch_embeddings) # b*l, 1, n, d
 
         return patch_embeddings
@@ -224,13 +246,13 @@ class RoboFlamingo(nn.Module):
 
     def _forward_action_head(
             self,
-            output_hs: torch.Tensor,
+            action_tokens: torch.Tensor,
             action_labels: Tuple[torch.Tensor, torch.Tensor] = None,
             action_mask: torch.Tensor = None,
             **kwargs
         ):
 
-        action_tokens = get_target_modal_tokens(output_hs, self._action_mask(output_hs))
+        # action_tokens = get_target_modal_tokens(output_hs, self._action_mask(output_hs))
         action = self.act_head(action_tokens)
 
         action_loss = None
@@ -286,7 +308,7 @@ class RoboFlamingo(nn.Module):
         """
         def get_key(k, d):
             if suffix is not None:
-                new_k = f"{k}|{suffix}"
+                new_k = f"{k}_{suffix}"
                 assert new_k not in d
                 return new_k
 
@@ -343,11 +365,8 @@ class RoboFlamingo(nn.Module):
 
         else:
             # Case: do not use caching (i.e. this is a standard forward pass);
-            if self.fusion_mode == 'post':
-                self._encode_multi_vision_post_fusion(vision_x, vision_gripper)
-            else:
-                raise NotImplementedError
-
+            self._encode_multi_vision_post_fusion(vision_x, vision_gripper)
+        # print(lang_x.shape, attention_mask.shape)
         output = self.lang_encoder(
             input_ids=lang_x,
             attention_mask=attention_mask.bool(),
@@ -358,9 +377,9 @@ class RoboFlamingo(nn.Module):
 
         if self.train_setup_configs['predict_action'] and action_labels is not None:
             output_hs = output.hidden_states[-1].clone()
-            action_selector = self._action_mask(output_hs)
-            output_hs = get_target_modal_tokens(output_hs, action_selector)
-            output_hs = rearrange(output_hs, 'bl n d -> b l n d', b=bs, l=seq_len)
+            # action_selector = self._action_mask(output_hs)
+            # output_hs = get_target_modal_tokens(output_hs, action_selector)
+            output_hs = rearrange(output_hs, '(b l) n d -> b l n d', b=bs, l=seq_len)
             _, action_loss = self._forward_action_head(output_hs, action_labels, action_mask)
             self._update_loss(loss, action_loss, 'act')
 
@@ -383,7 +402,7 @@ class RoboFlamingo(nn.Module):
                 **kwargs,
             )
             self._update_loss(loss, caption_loss, 'cap')
-            
+
         loss = self._format_loss(loss)
 
         self.lang_encoder.clear_conditioned_layers()
@@ -440,9 +459,10 @@ class RoboFlamingo(nn.Module):
 
         if self.train_setup_configs['predict_action']:
             output_hs = output.hidden_states[-1].clone()
-            action_selector = self._action_mask(output_hs)
-            output_hs = get_target_modal_tokens(output_hs, action_selector)
-            output_hs = rearrange(output_hs, 'bl n d -> b l n d', b=bs, l=seq_len)
+            # action_selector = self._action_mask(output_hs)
+            # output_hs = get_target_modal_tokens(output_hs, action_selector)
+            print(output_hs.shape)
+            output_hs = rearrange(output_hs, '(b l) n d -> b l n d', b=bs, l=seq_len)
             action, action_loss = self._forward_action_head(output_hs, action_labels, action_mask)
             prediction['act_pred'] = action
             self._update_loss(prediction, action_loss, 'action')

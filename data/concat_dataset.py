@@ -8,6 +8,8 @@ import numpy as np
 import bisect
 from utils.dist_train import get_rank
 
+import torch
+from data.data_utils import generate_chunck_data
 
 class ConcatDataset(_ConcatDataset):
     def __init__(self, datasets: List[Dict], min_sampled_num: int = 0, is_training=True, **kwargs):
@@ -77,6 +79,40 @@ class ConcatDataset(_ConcatDataset):
             sample_idx = idx - self.cumulative_sizes[dataset_idx - 1]
         sample_idx = sample_idx % len(self.datasets[dataset_idx])
         return self.datasets[dataset_idx][sample_idx]
+    
+    def collater(self, data):
+        # action_tensors = torch.from_numpy(np.array([np.stack(s["action"]) for s in data]))
+        # print(data)
+        action_tensors = torch.stack([s["action"] for s in data], dim=0) if data[0]['action'] is not None else None
+        image_tensors = torch.stack([s["rgb"] for s in data])
+        image_mask = torch.stack([s["attention_mask"] for s in data])
+        gripper_tensors = torch.stack([s["hand_rgb"] for s in data]) if data[0]['hand_rgb'] is not None else None
+
+        fwd_rgb_chunck = generate_chunck_data(image_tensors, self.window_size, self.fwd_pred_next_n)
+        fwd_hand_rgb_chunck = generate_chunck_data(gripper_tensors, self.window_size, self.fwd_pred_next_n)
+        chunck_mask = generate_chunck_data(image_mask, self.window_size, self.fwd_pred_next_n)
+        
+        action_chunck = generate_chunck_data(action_tensors, self.window_size, self.fwd_pred_next_n)
+
+        stacked_language = [s["raw_text"] for s in data]
+        text_tensors, text_mask = self.text_fn(stacked_language)
+
+        res = {
+            "rgb": image_tensors,
+            "attention_mask": image_mask,
+            "hand_rgb": gripper_tensors,
+            "action": action_tensors,
+            "text": text_tensors,
+            "text_mask": text_mask,
+            "fwd_rgb_chunck": fwd_rgb_chunck,
+            "fwd_hand_rgb_chunck": fwd_hand_rgb_chunck,
+            "action_chunck": action_chunck,
+            "chunck_mask": chunck_mask
+        }
+        
+        # return image_tensors, (text_tensors, text_mask), action_tensors, gripper_tensors, image_mask,\
+        #     fwd_rgb_chunck, fwd_hand_rgb_chunck, action_chunk
+        return res
 
 
 def test_dataset():

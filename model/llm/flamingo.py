@@ -87,8 +87,8 @@ def default_llm_flamingo_config(llm_name):
 def build_llm_flamingo(llm_config):
     if isinstance(llm_config, str):
         llm_config = default_llm_flamingo_config(llm_config)
-    else:
-        raise NotImplementedError
+    # else:
+    #     raise NotImplementedError
     
     llm_config = copy.deepcopy(llm_config)
     llm_type = llm_config.pop('type')

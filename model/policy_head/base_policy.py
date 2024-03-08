@@ -91,6 +91,8 @@ class BasePolicyHead(nn.Module):
         """
         if labels is None:
             return {"loss": None}
+        if isinstance(pred_action, tuple) or isinstance(pred_action, list):
+            pred_action = torch.cat([pred_action[0], pred_action[1].unsqueeze(-1)], dim=-1)
         if attention_mask is None:
             pose_loss = torch.nn.functional.huber_loss(pred_action[..., :6], labels[0])
             gripper_loss = torch.nn.functional.binary_cross_entropy(pred_action[..., -1], labels[1])
@@ -107,7 +109,7 @@ class BasePolicyHead(nn.Module):
         else:
             acc_gripper_act = (acc_gripper_act * attention_mask).sum() / attention_mask.sum()
         
-        return {"loss_arm": pose_loss, "loss_gripper": gripper_loss, "acc_gripper": acc_gripper_act}
+        return {"loss_arm": pose_loss, "loss_gripper": gripper_loss, "acc_gripper": acc_gripper_act.item()}
 
 
 class FCDecoder(BasePolicyHead):
@@ -147,17 +149,18 @@ class FCDecoder(BasePolicyHead):
 
 class LSTMDecoder(BasePolicyHead):
 
-    def __init__(self, hidden_size, action_dim, down_sample, latent, fwd_pred_next_n, window_size, 
-                 lstm_hs=1024, num_layers=4, policy_rnn_dropout_p=0.1, **kwargs):
-        super(LSTMDecoder, self).__init__(hidden_size, action_dim, **kwargs)
+    def __init__(self, in_features, action_dim, down_sample, latent, fwd_pred_next_n, window_size, 
+                 hidden_size=1024, num_layers=4, policy_rnn_dropout_p=0.1, **kwargs):
+        super(LSTMDecoder, self).__init__(in_features, action_dim, **kwargs)
         self.down_sample = down_sample
         self.latent = latent
         self.window_size = window_size
         self.history_len = window_size
         self.fwd_pred_next_n = fwd_pred_next_n
         self.history_memory = []
-        self.rnn = self.rnn(hidden_size*latent, lstm_hs, num_layers, policy_rnn_dropout_p)
-        self.actions = MLPTanhHead(self.hidden_size, fwd_pred_next_n * self.action_dim-1)
+        self.hidden_size = hidden_size
+        self.rnn = lstm_decoder(in_features, hidden_size*latent, num_layers, policy_rnn_dropout_p)
+        self.actions = MLPTanhHead(self.hidden_size, fwd_pred_next_n * (self.action_dim-1))
         self.gripper = MLPSigmoidHead(self.hidden_size, fwd_pred_next_n)
         self.hidden_state = None
         if self.down_sample == 'pooling':
@@ -174,8 +177,10 @@ class LSTMDecoder(BasePolicyHead):
     def forward(self, tok_seq, h_0=None):
         
         if self.down_sample == 'pooling':
-            tok_seq = self.pooling(tok_seq.permute(0, 1, 3, 2)) # bs, seq_len, n_tok, tok_dim -> bs, seq_len, tok_dim, n_tok
-            tok_seq = rearrange(tok_seq, 'b l d n -> b l (n d)')
+            bs, seq_len = tok_seq.shape[:2]
+            tok_seq = rearrange(tok_seq, 'b l n d-> (b l) n d')
+            tok_seq = self.pooling(tok_seq.permute(0, 2, 1)) # bs*seq_len, n_tok, tok_dim -> bs*seq_len, tok_dim, n_tok
+            tok_seq = rearrange(tok_seq, '(b l) d n -> b l (n d)', b=bs, l=seq_len)
         elif self.down_sample == 'resampler':
             raise NotImplementedError
         else:
@@ -208,7 +213,23 @@ class LSTMDecoder(BasePolicyHead):
         actions = self.actions(x)
         gripper = self.gripper(x)
 
-        action = rearrange(action, 'b l (n d) -> b l n d', n=self.fwd_pred_next_n)
-        gripper = rearrange(gripper, 'b l (n d) -> b l n d', n=self.fwd_pred_next_n)
+        actions = rearrange(actions, 'b l (n d) -> b l n d', n=self.fwd_pred_next_n)
+        # gripper = rearrange(gripper, 'b l (n d) -> b l n', n=self.fwd_pred_next_n)
 
         return actions, gripper
+
+if __name__ == '__main__':
+    net = LSTMDecoder(
+        in_features=1024, action_dim=7, down_sample='pooling', latent=1, fwd_pred_next_n=2, window_size=12,
+    )
+    bs = 5
+    window_size=12
+    text_len = 8
+    tokens = torch.randn(bs, window_size, text_len, 1024)
+    actions, gripper = net(tokens)
+    pred_actions = torch.cat([actions, gripper.unsqueeze(-1)], dim=-1)
+    labels = (torch.randn(bs, window_size, 2, 6), torch.ones(bs, window_size, 2))
+    att_mask = torch.ones(bs, window_size, 2)
+    loss = net.loss(pred_actions, labels, att_mask)
+    print(loss)
+    pass

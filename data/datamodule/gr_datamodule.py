@@ -3,14 +3,14 @@ import os.path
 
 import lightning.pytorch as pl
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
-import decision_transformer.data as Datasets
+import data as Datasets
 import torch
 from torch.utils.data.distributed import DistributedSampler
 
-import decision_transformer.data.samplers as gr_samplers
+import data.samplers as gr_samplers
 from copy import deepcopy
-from decision_transformer.utils.dist_train import get_rank
-from decision_transformer.data.utils import collate_with_none
+from utils.dist_train import get_rank
+from utils.utils import collate_with_none
 import traceback
 
 
@@ -21,7 +21,7 @@ class GRDataModule(pl.LightningDataModule):
             val_dataset,
             batch_size,
             num_workers,
-            data_root,
+            data_root='',
             **kwargs
     ):
         super().__init__()
@@ -44,7 +44,6 @@ class GRDataModule(pl.LightningDataModule):
 
         # avoid modification of the self attributes
         dataset_config = copy.deepcopy(dataset_config)
-
         datset_type = dataset_config.pop('type')
         assert datset_type in {'ConcatDataset', 'GRDataset'}
         dataset_config['is_training'] = is_training
@@ -97,7 +96,7 @@ class GRDataModule(pl.LightningDataModule):
             batch_size=batch_size,
             num_workers=num_workers if is_training else num_workers // 2,
             drop_last=True,
-            collate_fn=collate_with_none
+            collate_fn=dataset.collater if hasattr(dataset, 'collater') else collate_with_none,
         )
 
         return data_loader

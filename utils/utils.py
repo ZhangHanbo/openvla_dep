@@ -66,7 +66,7 @@ def list_all_files(dirs, verbose=False):
     return all_files
 
 def list_dir_with_cache(data_dir, cache_dir=None, verbose=True):
-    from decision_transformer.utils.dist_train import get_rank
+    from utils.dist_train import get_rank
     data_dir = data_dir.rstrip('/')
 
     if cache_dir is None:

@@ -6,7 +6,8 @@ from einops import rearrange
 def clip_vision_encoder(clip_vision_encoder_path, clip_vision_encoder_pretrained):
     vision_encoder, _, image_processor = open_clip.create_model_and_transforms(
             clip_vision_encoder_path, pretrained=clip_vision_encoder_pretrained
-        )
+    )
+    vision_encoder.visual.output_tokens = True
     vis_dim=open_clip.get_model_config(clip_vision_encoder_path)["vision_cfg"]["width"]
     return vision_encoder, image_processor, vis_dim
 
