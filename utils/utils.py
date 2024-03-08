@@ -126,3 +126,28 @@ def read_csv(rpath, encoding=None, **kwargs):
         return data
     except:
         return []
+
+def deep_update(d1, d2):
+    # use d2 to update d1
+    if d2.get("__override__", False):
+        # override
+        d1.clear()
+        d1.update(d2)
+        d1.pop("__override__", None)
+        return d1
+
+    for k, v in d2.items():
+        if isinstance(v, dict) and k in d1 and isinstance(d1[k], dict):
+            deep_update(d1[k], d2[k])
+        else:
+            d1[k] = d2[k]
+    return d1
+
+
+def load_config(config_file):
+    _config = json.load(open(config_file))
+    config = {}
+    if _config.get('parent', None):
+        deep_update(config, load_config(_config['parent']))
+    deep_update(config, _config)
+    return config
