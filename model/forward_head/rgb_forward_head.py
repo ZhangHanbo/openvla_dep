@@ -4,7 +4,7 @@ from torch import nn
 from flamingo_pytorch import PerceiverResampler
 from abc import ABCMeta, abstractmethod
 
-from model.utils.model_utils import get_2d_sincos_pos_embed, Block
+from utils.model_utils import get_2d_sincos_pos_embed, Block
 
 
 class RGBForwardPredHead(nn.Module, metaclass=ABCMeta):
