@@ -26,61 +26,10 @@ import traceback
 from utils.dist_train import get_rank
 from utils.utils import b64_2_img
 from utils.model_utils import build_tokenizer
-from data.data_utils import generate_chunck_data, get_text_function
+from data.dummy_dataset import DummyDataset
+from data.data_utils import generate_chunck_data, get_text_function, RandomShiftsAug, RandomShiftsSingleAug
 
-
-class RandomShiftsAug(nn.Module):
-    def __init__(self, pad):
-        super().__init__()
-        self.pad = pad
-
-    @torch.no_grad()
-    def forward(self, x):
-        assert isinstance(x, torch.Tensor) and len(x.size()) == 4
-        x = x.float()
-        n, c, h, w = x.size()
-        assert h == w
-        padding = tuple([self.pad] * 4)
-        x = F.pad(x, padding, "replicate")
-        eps = 1.0 / (h + 2 * self.pad)
-        arange = torch.linspace(-1.0 + eps, 1.0 - eps, h + 2 * self.pad, device=x.device, dtype=x.dtype)[:h]
-        arange = arange.unsqueeze(0).repeat(h, 1).unsqueeze(2)
-        base_grid = torch.cat([arange, arange.transpose(1, 0)], dim=2)
-        base_grid = base_grid.unsqueeze(0).repeat(n, 1, 1, 1)
-
-        shift = torch.randint(0, 2 * self.pad + 1, size=(n, 1, 1, 2), device=x.device, dtype=x.dtype)
-        shift *= 2.0 / (h + 2 * self.pad)
-
-        grid = base_grid + shift
-        return F.grid_sample(x, grid, padding_mode="zeros", align_corners=False)
-
-
-class RandomShiftsSingleAug(nn.Module):
-    def __init__(self, pad):
-        super().__init__()
-        self.pad = pad
-
-    def forward(self, x):
-        x = x.float()
-        n, c, h, w = x.size()
-        assert h == w
-        padding = tuple([self.pad] * 4)
-        x = F.pad(x, padding, "replicate")
-        eps = 1.0 / (h + 2 * self.pad)
-        arange = torch.linspace(-1.0 + eps, 1.0 - eps, h + 2 * self.pad, device=x.device, dtype=x.dtype)[:h]
-        arange = arange.unsqueeze(0).repeat(h, 1).unsqueeze(2)
-        base_grid = torch.cat([arange, arange.transpose(1, 0)], dim=2)
-        base_grid = base_grid.unsqueeze(0).repeat(n, 1, 1, 1)
-
-        shift = torch.randint(0, 2 * self.pad + 1, size=(1, 1, 1, 2), device=x.device, dtype=x.dtype)
-        shift = shift.repeat(n, 1, 1, 1)
-        shift *= 2.0 / (h + 2 * self.pad)
-
-        grid = base_grid + shift
-        return F.grid_sample(x, grid, padding_mode="zeros", align_corners=False)
-
-
-class GRDataset(Dataset):
+class GRDataset(DummyDataset):
     def __init__(
             self,
             data_dir,
@@ -119,7 +68,7 @@ class GRDataset(Dataset):
         self.use_random_shift = use_random_shift
         self.shift_first = shift_first
         self.tokenizer = build_tokenizer(tokenizer_config=tokenizer)
-        self.tokenizer_type = tokenizer['tokenizer_type']
+        self.tokenizer_type = tokenizer['type']
         self.max_text_len = tokenizer['max_text_len']
         self.text_fn = get_text_function(self.tokenizer, self.tokenizer_type, self.max_text_len)
         # initialize pad token
@@ -131,8 +80,7 @@ class GRDataset(Dataset):
         
         self.window_size = window_size
         self.fwd_pred_next_n = fwd_pred_next_n
-        seq_len = window_size + fwd_pred_next_n
-        self.seq_len = seq_len
+        self.seq_len = window_size + fwd_pred_next_n
         
         self.text_seq_len = text_seq_len
         self.use_hand_rgb = use_hand_rgb
@@ -163,6 +111,8 @@ class GRDataset(Dataset):
         self.ann_files = self._init_anns(self.dataset_dir)
         if get_rank() == 0:
             print(f'{len(self)} trajectories in total')
+
+        self.data_length = len(self.ann_files)
 
     def __str__(self):
         return f"{len(self.ann_files)} samples from {self.dataset_dir}"
@@ -241,9 +191,6 @@ class GRDataset(Dataset):
                 shutil.move(_temp_cache, _cache_file)
 
         return ann_files
-
-    def __len__(self):
-        return len(self.ann_files)
 
     # def _get_text(self, label):
     #     texts = label['texts']
