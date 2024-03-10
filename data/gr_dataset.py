@@ -558,6 +558,27 @@ if __name__ == "__main__":
     data_path = "/mnt/bn/robotics-data-hl/real_data/gr2_labels_1110/CALVIN/task_ABCD_D/val"
     # data_path = "/mnt/bn/robotics-lq2024/zhb/gr2_data/anns/ego4d/gr2-1130/train/json"
     # data_path = "/mnt/bn/robotics-lq2024/zhb/gr2_data/anns/ego4d/gr2-1120compressed/train/json"
+    config = {
+        "type": "GRDataset",
+        "data_dir": "/mnt/bn/robotics-data-hl/real_data/gr2_labels_1110/CALVIN/task_ABCD_D/train",
+        "shift_first": False,
+        "tokenizer": {
+            "type": "AutoTokenizer",
+            "pretrained_model_name_or_path": "/mnt/bn/robotics/lxh/mpt-1b-redpajama-200b-dolly",
+            "tokenizer_type": "flamingo",
+            "max_text_len": 32
+        }
+    }
+    dataset = GRDataset(
+        data_dir=config["data_dir"],
+        tokenizer=config["tokenizer"],
+    )
+    dataloader = DataLoader(dataset, batch_size=2, shuffle=True, num_workers=0, collate_fn=dataset.collater)
+    for i, data in enumerate(dataloader):
+        for d in data:
+            print(d, data[d])
+            continue
+        exit(0)
     print('start loading clip')
     _, clip_preprocess = clip.load('ViT-B/32', device='cpu')
     print('clip loaded')
