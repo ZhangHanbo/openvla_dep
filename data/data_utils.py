@@ -147,13 +147,14 @@ def generate_chunck_data(data, window_size, chunk_size):
     assert seq_len == window_size + chunk_size, f"The sequence length should be {window_size + chunk_size}"
     data_flatten = repeat(data_flatten, 'b s d -> b w s d', w=window_size)
 
-    mask = claw_matrix(seq_len, chunk_size, data_flatten.device)
-    mask = mask - torch.diag_embed(mask.diag()) # set current obs mask to 0
+    mask = claw_matrix(seq_len, chunk_size - 1, data_flatten.device)
+    # mask = mask - torch.diag_embed(mask.diag()) # set current obs mask to 0
     mask = mask[:window_size].bool()
     
     mask = repeat(mask, 'w s -> b w s d', b=bs, d=data_flatten.shape[-1])
     data_flatten = torch.masked_select(data_flatten, mask)
 
+    # data_flatten = data_flatten.view(bs, window_size, chunk_size, *raw_data_shape)
     data_flatten = data_flatten.view(bs, window_size, chunk_size, *raw_data_shape)
     
     return data_flatten
@@ -164,8 +165,6 @@ def get_text_function(tokenizer, tokenizer_type, max_length):
         def preprocess_text_flamingo(sample, tokenizer):
             tokenizer.padding_side = "right"
             sample = [
-                # (f"{s.strip()}{tokenizer.eos_token}")
-                # for s in sample
                 (f"<image>{s.strip()}<|endofchunk|>{tokenizer.eos_token}") for s in sample
             ]
             text = tokenizer(
@@ -179,3 +178,20 @@ def get_text_function(tokenizer, tokenizer_type, max_length):
         return functools.partial(preprocess_text_flamingo, tokenizer=tokenizer)
     else:
         raise NotImplementedError
+
+
+def preprocess_image(sample, image_processor):
+    image = [image_processor(s).unsqueeze(0) for s in sample]
+    image = torch.cat(image, dim=0)
+    # apply random horizontal flip and color jitter
+    return image
+
+
+if __name__ == '__main__':
+    # print(claw_matrix(5, 1))
+    bs = 2; seq_len=10; window_size=9; 
+    chunk_size=seq_len - window_size
+    data = torch.randn(bs, seq_len, 5)
+    print(data)
+    print('-'*100)
+    print(generate_chunck_data(data, window_size, chunk_size))

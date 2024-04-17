@@ -30,8 +30,9 @@
     "output_root": "/mnt/bn/robotics-data-lxh-lq/checkpoints/video_pretrain_manipulation/calvin_finetune",
     "log_root": "/mnt/bn/robotics-data-lxh-lq/logs/video_pretrain_manipulation/calvin_finetune",
     "cache_root": "/mnt/bn/robotics-data-lxh-lq/cache/video_pretrain_manipulation",
-    "model_load_path": null,
+    "model_load_path": "/mnt/bn/robotics/lxh/RoboFlamingo/checkpoint_gripper_post_hist_1_aug_10_4_traj_cons_ws_12_mpt_3b_4.pth",
     "model_load_source": "torch",
+    "gradient_clip_val": 1.0,
     "resume": null,
     "vision_encoder": {
         "clip_vision_encoder_path": "ViT-L-14",
@@ -75,7 +76,7 @@
     "fwd_head": null,
     "trainer": {
         "accelerator": "gpu",
-        "strategy": "deepspeed_stage_3",
+        "strategy": "ddp",
         "precision": "32",
         "logger": ["tensorboard"],
         "gradient_clip_val": 1.0,
@@ -88,19 +89,17 @@
     },
     "train_dataset": [
         {
-            "type": "GRDataset",
-            "data_dir": "/mnt/bn/robotics-data-hl/real_data/gr2_labels_1110/CALVIN/task_ABCD_D/train",
+            "type": "DiskCalvinDataset",
+            "data_dir": "/mnt/bn/robotics/manipulation_data/calvin_data/task_ABCD_D/training",
             "shift_first": false,
-            "tokenizer_type": "flamingo",
-            "c_act_scaler": [50.0, 50.0, 50.0, 33.0, 33.0, 33.0]
+            "tokenizer_type": "flamingo"
         }
     ],
     "val_dataset": [
         {
-            "type": "GRDataset",
-            "data_dir": "/mnt/bn/robotics-data-hl/real_data/gr2_labels_1110/CALVIN/task_ABCD_D/val",
-            "tokenizer_type": "flamingo",
-            "c_act_scaler": [50.0, 50.0, 50.0, 33.0, 33.0, 33.0]
+            "type": "DiskCalvinDataset",
+            "data_dir": "/mnt/bn/robotics/manipulation_data/calvin_data/task_ABCD_D/validation",
+            "tokenizer_type": "flamingo"
         }
     ]
 }

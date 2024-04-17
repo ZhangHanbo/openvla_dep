@@ -79,7 +79,7 @@ def default_tokenizer_config(tokenizer):
     return tokenizer_cfg[tokenizer]
 
 
-def build_tokenizer(tokenizer_config, new_tokens=None):
+def build_tokenizer(tokenizer_config):
     if isinstance(tokenizer_config, str):
         tokenizer_config = default_tokenizer_config(tokenizer_config)
     else:
@@ -92,7 +92,7 @@ def build_tokenizer(tokenizer_config, new_tokens=None):
     tokenizer_path = tokenizer_config.pop('pretrained_model_name_or_path')
 
     try:
-        tokenizer = getattr(transformers, tokenizer_type).from_pretrained(tokenizer_path)
+        tokenizer = getattr(transformers, tokenizer_type).from_pretrained(tokenizer_path, local_files_only=tokenizer_config.get('use_local_files', False))
 
     except:
         warnings.warn(f"Tokenizer initialization failed with the given path {tokenizer_path}. "
@@ -112,13 +112,12 @@ def build_tokenizer(tokenizer_config, new_tokens=None):
 
         # except:
         #     print(f'Saving tokenizer to {tokenizer_path} failed...')
-
+    new_tokens = tokenizer_config.get('additional_special_tokens', None)
     if new_tokens is not None:
-        new_tokens = {'additional_special_tokens': new_tokens}
-        tokenizer.add_special_tokens(new_tokens)
+        tokenizer.add_special_tokens({'additional_special_tokens': new_tokens})
     
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.add_special_tokens({"pad_token": "<PAD>"})
+        tokenizer.add_special_tokens({"pad_token": "<PAD>"})
 
     assert tokenizer.vocab_size < 2 ** 16
     return tokenizer

@@ -91,6 +91,7 @@ class BasePolicyHead(nn.Module):
         """
         if labels is None:
             return {"loss": None}
+        # import pdb; pdb.set_trace()
         if isinstance(pred_action, tuple) or isinstance(pred_action, list):
             pred_action = torch.cat([pred_action[0], pred_action[1].unsqueeze(-1)], dim=-1)
         if attention_mask is None:
@@ -164,7 +165,7 @@ class LSTMDecoder(BasePolicyHead):
         self.gripper = MLPSigmoidHead(self.hidden_size, fwd_pred_next_n)
         self.hidden_state = None
         if self.down_sample == 'pooling':
-            self.pooling = nn.AdaptiveMaxPool1d(latent)
+            self.global_1d_pool = nn.AdaptiveMaxPool1d(latent)
         elif self.down_sample == 'resampler':
             pass
         else:
@@ -179,7 +180,7 @@ class LSTMDecoder(BasePolicyHead):
         if self.down_sample == 'pooling':
             bs, seq_len = tok_seq.shape[:2]
             tok_seq = rearrange(tok_seq, 'b l n d-> (b l) n d')
-            tok_seq = self.pooling(tok_seq.permute(0, 2, 1)) # bs*seq_len, n_tok, tok_dim -> bs*seq_len, tok_dim, n_tok
+            tok_seq = self.global_1d_pool(tok_seq.permute(0, 2, 1)) # bs*seq_len, n_tok, tok_dim -> bs*seq_len, tok_dim, n_tok
             tok_seq = rearrange(tok_seq, '(b l) d n -> b l (n d)', b=bs, l=seq_len)
         elif self.down_sample == 'resampler':
             raise NotImplementedError
@@ -222,14 +223,25 @@ if __name__ == '__main__':
     net = LSTMDecoder(
         in_features=1024, action_dim=7, down_sample='pooling', latent=1, fwd_pred_next_n=2, window_size=12,
     )
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
     bs = 5
     window_size=12
     text_len = 8
     tokens = torch.randn(bs, window_size, text_len, 1024)
-    actions, gripper = net(tokens)
-    pred_actions = torch.cat([actions, gripper.unsqueeze(-1)], dim=-1)
+    # actions, gripper = net(tokens)
+    # pred_actions = torch.cat([actions, gripper.unsqueeze(-1)], dim=-1)
     labels = (torch.randn(bs, window_size, 2, 6), torch.ones(bs, window_size, 2))
     att_mask = torch.ones(bs, window_size, 2)
-    loss = net.loss(pred_actions, labels, att_mask)
+    for i in range(10000):
+        actions, gripper = net(tokens)
+        pred_actions = torch.cat([actions, gripper.unsqueeze(-1)], dim=-1)
+        optimizer.zero_grad()
+        loss = net.loss(pred_actions, labels, att_mask)
+        
+        loss_arm = loss['loss_arm']; loss_gripper = loss['loss_gripper']; acc_gripper = loss['acc_gripper']
+        loss_act = loss_arm + 0.01 * loss_gripper
+        loss_act.backward()
+        optimizer.step()
+        print("iter: {}, loss: {} gripper: {} acc: {}".format(i, loss_act.item(), loss_gripper.item(), acc_gripper))
     print(loss)
     pass

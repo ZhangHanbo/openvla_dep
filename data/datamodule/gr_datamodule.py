@@ -45,7 +45,7 @@ class GRDataModule(pl.LightningDataModule):
         # avoid modification of the self attributes
         dataset_config = copy.deepcopy(dataset_config)
         datset_type = dataset_config.pop('type')
-        assert datset_type in {'ConcatDataset', 'GRDataset'}
+        assert datset_type in {'ConcatDataset', 'GRDataset', 'DiskCalvinDataset'}
         dataset_config['is_training'] = is_training
         sampler_config = dataset_config.pop('sampler', None)
 

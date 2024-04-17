@@ -111,8 +111,11 @@ class FlamingoTrainer(pl.LightningModule):
                 "you need to specify the configs for initialization."
             model = cls(configs)
             checkpoint = torch.load(configs['model_load_path'], map_location='cpu')
-            state_dict = checkpoint['state_dict']
+            # state_dict = checkpoint['state_dict']
+            state_dict = checkpoint['model_state_dict']
+            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
             del checkpoint
+            # import pdb; pdb.set_trace()
             msg = model.model.load_state_dict(state_dict, strict=False)
             cls._main_rank_print(msg)
             del state_dict
@@ -154,10 +157,33 @@ class FlamingoTrainer(pl.LightningModule):
         self._main_rank_print("LR SCHEDULER CONFIGS:")
         self._main_rank_print(f"effective batch size: {eff_batch_size}, effective learning rate: {eff_lr}")
 
+        def get_grouped_params(model):
+            params_with_wd, params_without_wd = [], []
+
+            def apply_decay(x):
+                return (
+                    "gated_cross_attn_layer" in x
+                    and "ff_gate" not in x
+                    and "attn_gate" not in x
+                    and "norm" not in x
+                    and "bias" not in x
+                )
+
+            for n, p in model.named_parameters():
+                
+                if apply_decay(n):
+                    params_with_wd.append(p)
+                else:
+                    params_without_wd.append(p)
+
+            return [
+                {"params": [p for p in params_with_wd if p.requires_grad], "weight_decay": self.configs['weight_decay']},
+                {"params": [p for p in params_without_wd if p.requires_grad], "weight_decay": 0.0},
+            ]
+    
         optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=eff_lr,
-            weight_decay=self.configs['weight_decay']
+            get_grouped_params(self.model),
+            lr=eff_lr
         )
 
         assert self.trainer.max_epochs is not None
@@ -212,9 +238,10 @@ class FlamingoTrainer(pl.LightningModule):
         if isinstance(batch['text'], list) and isinstance(batch['text'][0], str):
             raise ValueError('The raw text data is not supported')
         else:
-            seq_len = batch['rgb'].shape[1]
-            if seq_len > 1:
-                seq_len -= self.configs['fwd_pred_next_n']
+            # seq_len = batch['rgb'].shape[1]
+            # if seq_len > 1:
+            #     seq_len -= self.configs['fwd_pred_next_n']
+            seq_len = self.configs['window_size']
             language = batch['text'].unsqueeze(1).repeat(1, seq_len, 1).cuda()
             text_mask = batch['text_mask'].unsqueeze(1).repeat(1, seq_len, 1).cuda()
 
@@ -226,7 +253,9 @@ class FlamingoTrainer(pl.LightningModule):
         else:
             action = None
 
-        attention_mask = batch['attention_mask'].cuda()
+        attention_mask = batch.get('attention_mask', None)
+        if attention_mask is not None:
+            attention_mask = batch['attention_mask'].cuda()
         
         if self.use_hand_rgb and batch.get('hand_rgb', None) is not None:
             hand_rgb = batch['hand_rgb'].cuda()
@@ -258,21 +287,24 @@ class FlamingoTrainer(pl.LightningModule):
             arm_action_chunck = action_chunck[..., :6]
             gripper_action_chunck = action_chunck[..., -1]
         
-                
-        fwd_pred_next_n = self.configs['fwd_pred_next_n']
-
-        caption_flag = False
-        if seq_len == 1:
-            caption_flag = True
-        if not caption_flag:
-            rgb = rgb[:, :-fwd_pred_next_n]
-            if hand_rgb is not None:
-                hand_rgb = hand_rgb[:, :-fwd_pred_next_n]
+        # fwd_pred_next_n = self.configs['fwd_pred_next_n']
+        # 
+        # caption_flag = False
+        # if seq_len == 1:
+        #     caption_flag = True
+        # if not caption_flag:
+        #     rgb = rgb[:, :-fwd_pred_next_n]
+        #     if hand_rgb is not None:
+        #         hand_rgb = hand_rgb[:, :-fwd_pred_next_n]
+        
+        rgb = rgb[:, :seq_len]
+        if hand_rgb is not None:
+            hand_rgb = hand_rgb[:, :seq_len]
         
         chunck_mask = batch.get('chunck_mask', None)
         if chunck_mask is not None:
             chunck_mask = chunck_mask.cuda()
-
+        # import pdb; pdb.set_trace()
         return rgb, hand_rgb, attention_mask, language, text_mask, fwd_rgb_chunck, fwd_hand_rgb_chunck,\
         arm_action, gripper_action, arm_action_chunck, gripper_action_chunck, chunck_mask
 
@@ -342,7 +374,7 @@ class FlamingoTrainer(pl.LightningModule):
                 vision_gripper=hand_rgb,
                 fwd_rgb_labels=fwd_rgb_chunck,
                 fwd_hand_rgb_chunck=fwd_hand_rgb_chunck,
-                fwd_mask=chunck_mask.clone(),
+                fwd_mask=chunck_mask,
             )
 
             output = self._get_loss(prediction)
@@ -382,7 +414,7 @@ class FlamingoTrainer(pl.LightningModule):
             vision_gripper=hand_rgb,
             fwd_rgb_labels=fwd_rgb_chunck,
             fwd_hand_rgb_chunck=fwd_hand_rgb_chunck,
-            fwd_mask=chunck_mask.clone(),
+            fwd_mask=chunck_mask,
         )
 
         output = self._get_loss(prediction)

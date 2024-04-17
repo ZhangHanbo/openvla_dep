@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import importlib
 import copy
+import functools
 
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.trainer import Trainer
@@ -13,8 +14,8 @@ from lightning import seed_everything
 
 from train.flamingo_trainer import FlamingoTrainer
 from data.datamodule.gr_datamodule import GRDataModule
+from data.data_utils import preprocess_image
 from utils.setup_callback import SetupCallback
-
 
 import datetime
 
@@ -51,6 +52,7 @@ def init_trainer_config(configs):
     trainer_config = copy.deepcopy(configs['trainer'])
     trainer_config['devices'] = configs.get('gpus', 'auto')
     trainer_config['num_nodes'] = configs.get('num_nodes', 1)
+    trainer_config['gradient_clip_val'] = configs.get('gradient_clip_val', 0.)
     exp_name = configs.get('name', 'default')
 
     if 'strategy' not in trainer_config or trainer_config['strategy'] == 'ddp':
@@ -97,6 +99,10 @@ def experiment(variant):
         variant.get('model_load_source', 'torch'),
         variant
     )
+    # if 'fwd_pred_next_n' not in variant['train_dataset']:
+    #     variant['train_dataset']['fwd_pred_next_n'] = variant['fwd_pred_next_n']
+    # if 'fwd_pred_next_n' not in variant['val_dataset']:
+    #     variant['val_dataset']['fwd_pred_next_n'] = variant['fwd_pred_next_n'] 
 
     _kwargs = {
         'model': model,
@@ -106,6 +112,9 @@ def experiment(variant):
             variant['batch_size'],
             variant['num_workers'],
             tokenizer=variant['tokenizer'],
+            fwd_pred_next_n=variant['fwd_pred_next_n'],
+            window_size=variant['window_size'],
+            image_fn=functools.partial(preprocess_image, image_processor=model.model.clip_preprocess)
         ),
         'ckpt_path': variant['resume']
     }

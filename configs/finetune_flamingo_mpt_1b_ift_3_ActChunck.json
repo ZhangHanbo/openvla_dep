@@ -1,8 +1,8 @@
 {
     "parent": null,
     "model": "flamingo",
-    "seq_len": 11,
-    "fwd_pred_next_n": 1,
+    "seq_len": 13,
+    "fwd_pred_next_n": 3,
     "arm_gripper_loss_ratio": 0.01,
     "cap_loss_ratio": 0.05,
     "fwd_loss_ratio": 0,
@@ -30,7 +30,7 @@
     "output_root": "/mnt/bn/robotics-data-lxh-lq/checkpoints/video_pretrain_manipulation/calvin_finetune",
     "log_root": "/mnt/bn/robotics-data-lxh-lq/logs/video_pretrain_manipulation/calvin_finetune",
     "cache_root": "/mnt/bn/robotics-data-lxh-lq/cache/video_pretrain_manipulation",
-    "model_load_path": null,
+    "model_load_path": "/mnt/bn/robotics/lxh/RoboFlamingo/checkpoint_gripper_post_hist_1_aug_10_4_traj_cons_ws_12_mpt_3b_4.pth",
     "model_load_source": "torch",
     "resume": null,
     "vision_encoder": {
@@ -47,8 +47,7 @@
         "type": "AutoTokenizer",
         "pretrained_model_name_or_path": "/mnt/bn/robotics/lxh/mpt-1b-redpajama-200b-dolly",
         "tokenizer_type": "flamingo",
-        "max_text_len": 32,
-        "additional_special_tokens": ["<|endofchunk|>", "<image>"]
+        "max_text_len": 32
     },
     "train_setup": {
         "predict_action": true,
@@ -64,18 +63,18 @@
     "act_encoder": null,
     "act_head": {
         "type": "LSTMDecoder",
-        "hidden_size": 1024,
+        "hidden_size": 4096,
         "action_dim": 7,
         "down_sample": "pooling",
         "latent": 1,
-        "fwd_pred_next_n": 1,
+        "fwd_pred_next_n": 3,
         "window_size": 1,
         "lstm_hs": 1024
     },
     "fwd_head": null,
     "trainer": {
         "accelerator": "gpu",
-        "strategy": "deepspeed_stage_3",
+        "strategy": "ddp",
         "precision": "32",
         "logger": ["tensorboard"],
         "gradient_clip_val": 1.0,

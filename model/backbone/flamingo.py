@@ -65,11 +65,11 @@ class RoboFlamingo(nn.Module):
         self.llm_configs = llm_configs
 
         # Initialize tokenizer
-        self.tokenizer = build_tokenizer(tokenizer_configs, new_tokens=["<|endofchunk|>", "<image>"])
+        self.tokenizer = build_tokenizer(tokenizer_configs)
         self.eoc_token_id = self.tokenizer.encode("<|endofchunk|>")[-1]
         self.media_token_id = self.tokenizer.encode("<image>")[-1]
         # Initialize vision encoder
-        self.vision_encoder, _, self.vis_dim = self._init_vision_encoder()
+        self.vision_encoder, self.clip_preprocess, self.vis_dim = self._init_vision_encoder()
 
         self.lang_encoder = self._init_llm()
 
@@ -77,7 +77,7 @@ class RoboFlamingo(nn.Module):
 
         self.load_openflamingo_ckpt()
         
-        self.act_head, self.fwd_head = self._init_heads()
+        self.lm_head, self.fwd_head = self._init_heads()
 
         self._trainable_params_setup()
     
@@ -153,7 +153,7 @@ class RoboFlamingo(nn.Module):
         if self.train_setup_configs['train_text_embedding']:
             self.lang_encoder.get_input_embeddings().requires_grad_(True)
         
-        self.act_head.requires_grad_(True)
+        self.lm_head.requires_grad_(True)
         self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Flamingo model initialized with {self.trainable_params}")
 
@@ -162,7 +162,8 @@ class RoboFlamingo(nn.Module):
         if self.act_head_configs is not None:
             import model.policy_head.base_policy as action_heads
             _kwargs = copy.deepcopy(self.act_head_configs)
-            _kwargs.update(dict(hidden_size=self.hidden_size, 
+            _kwargs.update(dict(
+                # hidden_size=self.hidden_size, 
                                 in_features=self.lang_dim,
                                 fwd_pred_next_n=self.fwd_pred_next_n))
             _cls = getattr(action_heads, _kwargs.pop('type'))
@@ -196,7 +197,7 @@ class RoboFlamingo(nn.Module):
         batch_size, seq_length, c, h, w = rgb.shape
         rgb = rgb.reshape(batch_size * seq_length, c, h, w)
         # print('rgb input shape', rgb.shape)
-        patch_embeddings = self.vision_encoder.visual(rgb)[1].unsqueeze(1).unsqueeze(1) # b*l, v, d
+        patch_embeddings = self.vision_encoder.visual(rgb)[1].unsqueeze(1).unsqueeze(1) # b*l, 1, 1, v, d
         # print('path_embedding shape after vit', patch_embeddings.shape)
         # patch_embeddings = patch_embeddings.view(batch_size, seq_length, *patch_embeddings.shape[1:])
         
@@ -253,11 +254,12 @@ class RoboFlamingo(nn.Module):
         ):
 
         # action_tokens = get_target_modal_tokens(output_hs, self._action_mask(output_hs))
-        action = self.act_head(action_tokens)
+        action = self.lm_head(action_tokens)
 
         action_loss = None
+        action_mask = None
         if action_labels is not None:
-            action_loss = self.act_head.loss(action, action_labels, action_mask)
+            action_loss = self.lm_head.loss(action, action_labels, action_mask)
 
         return action, action_loss
 
@@ -405,8 +407,8 @@ class RoboFlamingo(nn.Module):
 
         loss = self._format_loss(loss)
 
-        self.lang_encoder.clear_conditioned_layers()
-        self.lang_encoder._use_cached_vision_x = False
+        # self.lang_encoder.clear_conditioned_layers()
+        # self.lang_encoder._use_cached_vision_x = False
 
         return loss
 
@@ -506,3 +508,4 @@ class RoboFlamingo(nn.Module):
         self.lang_encoder._use_cached_vision_x = False
 
         return prediction
+    
