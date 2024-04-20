@@ -1,5 +1,11 @@
 *cache*
 .git
 .idea/
-
+calvin_debug_dataset/
 utils/arnold_info.json
+**/*.png
+**/*.txt
+**/*.json
+**/*.pkl
+**/*.md
+**/*.ipynb
